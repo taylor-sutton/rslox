@@ -3,3 +3,6 @@
 
 /// vm is the bits about running code.
 pub mod vm;
+
+/// scanner scans!
+pub mod scanner;
