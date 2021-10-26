@@ -156,6 +156,7 @@ impl<'a> Scanner<'a> {
             }
             '"' => self.scan_string_literal(),
             '0'..='9' => self.scan_numeric_literal(),
+            c if c.is_alphabetic() => self.scan_identifier_or_keyword(),
             c => self.err_token(format!("Unexpected character '{}'.", c)),
         };
         self.reset_scanned_input();
@@ -292,6 +293,51 @@ impl<'a> Scanner<'a> {
         }
         self.make_token(TokenType::Number)
     }
+
+    fn scan_identifier_or_keyword(&mut self) -> Token<'a> {
+        while self.peek_next_char().map_or(false, |c| c.is_alphanumeric()) {
+            self.take_next_char();
+        }
+        self.make_token(token_type_from_str(&self.input[0..self.scanned_input_len]))
+    }
+}
+
+// assumes text is not empty
+fn token_type_from_str(token_text: &str) -> TokenType {
+    let mut chars = token_text.chars();
+    match chars.next().unwrap() {
+        'a' => keyword_if_equal(&token_text[1..], "nd", TokenType::And),
+        'c' => keyword_if_equal(&token_text[1..], "lass", TokenType::Class),
+        'e' => keyword_if_equal(&token_text[1..], "lse", TokenType::Else),
+        'i' => keyword_if_equal(&token_text[1..], "f", TokenType::If),
+        'n' => keyword_if_equal(&token_text[1..], "il", TokenType::Nil),
+        'o' => keyword_if_equal(&token_text[1..], "r", TokenType::Or),
+        'p' => keyword_if_equal(&token_text[1..], "rint", TokenType::Print),
+        'r' => keyword_if_equal(&token_text[1..], "eturn", TokenType::Return),
+        's' => keyword_if_equal(&token_text[1..], "uper", TokenType::Super),
+        'v' => keyword_if_equal(&token_text[1..], "ar", TokenType::Var),
+        'w' => keyword_if_equal(&token_text[1..], "hile", TokenType::While),
+        'f' => match chars.next() {
+            Some('a') => keyword_if_equal(&token_text[2..], "lse", TokenType::False),
+            Some('o') => keyword_if_equal(&token_text[2..], "r", TokenType::For),
+            Some('u') => keyword_if_equal(&token_text[2..], "n", TokenType::Fun),
+            _ => TokenType::Identifier,
+        },
+        't' => match chars.next() {
+            Some('h') => keyword_if_equal(&token_text[2..], "is", TokenType::This),
+            Some('r') => keyword_if_equal(&token_text[2..], "ue", TokenType::True),
+            _ => TokenType::Identifier,
+        },
+        _ => TokenType::Identifier,
+    }
+}
+
+fn keyword_if_equal(text: &str, keyword_text: &str, typ: TokenType) -> TokenType {
+    if text == keyword_text {
+        typ
+    } else {
+        TokenType::Identifier
+    }
 }
 
 impl<'a> Iterator for Scanner<'a> {
@@ -402,6 +448,47 @@ mod test {
         assert_eq!(tokens.len(), expected_tokens.len());
         for (i, (expected, got)) in tokens.into_iter().zip(expected_tokens).enumerate() {
             assert_eq!(expected, got, "on the token number {}", i);
+        }
+    }
+
+    #[test]
+    fn test_keywords_and_identifiers() {
+        let text =
+            "and class else if nil or print return super var while false for fun true this f t fAlse thIS";
+        let expected_tokens: Vec<_> = vec![
+            ("and", TokenType::And),
+            ("class", TokenType::Class),
+            ("else", TokenType::Else),
+            ("if", TokenType::If),
+            ("nil", TokenType::Nil),
+            ("or", TokenType::Or),
+            ("print", TokenType::Print),
+            ("return", TokenType::Return),
+            ("super", TokenType::Super),
+            ("var", TokenType::Var),
+            ("while", TokenType::While),
+            ("false", TokenType::False),
+            ("for", TokenType::For),
+            ("fun", TokenType::Fun),
+            ("true", TokenType::True),
+            ("this", TokenType::This),
+            ("f", TokenType::Identifier),
+            ("t", TokenType::Identifier),
+            ("fAlse", TokenType::Identifier),
+            ("thIS", TokenType::Identifier),
+            ("", TokenType::Eof),
+        ]
+        .into_iter()
+        .map(|(raw, typ)| Token {
+            typ,
+            raw: raw.into(),
+            line: 1,
+        })
+        .collect();
+        let tokens: Vec<_> = Scanner::new(text).collect();
+        assert_eq!(tokens.len(), expected_tokens.len());
+        for (i, (expected, got)) in expected_tokens.into_iter().zip(tokens).enumerate() {
+            assert_eq!(expected, got, "comparing token {}", i);
         }
     }
 }
