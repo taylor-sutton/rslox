@@ -9,3 +9,14 @@ pub mod scanner;
 
 /// Takes tokens from the scanner and emits bytecode
 pub mod compiler;
+
+/// End-to-end hook-up of the whole intepreter.
+/// State is not preserved between calls (yet).
+pub fn interpret(src: &str) -> Result<(), vm::InterpretError> {
+    let s = scanner::Scanner::new(src);
+    let c = compiler::compile(s);
+    match c {
+        None => Err(vm::InterpretError::CompileError),
+        Some(c) => vm::Vm::new(c).interpret(),
+    }
+}

@@ -51,7 +51,7 @@ mod precedence {
                 Unary => Call,
                 Call => Primary,
                 Primary => Top,
-                Top => panic!("TODO"),
+                Top => Top,
             }
         }
     }
@@ -118,10 +118,10 @@ where
         // We expect the first token to be either a prefix operator, or an atom
         match self.current_token.typ {
             TokenType::Number => {
-                // TODO fix add_constant to not panic, so we can give a better error here
                 let idx = self
                     .chunk
-                    .add_constant(Value::Number(self.current_token.raw.parse().unwrap()));
+                    .add_constant(Value::Number(self.current_token.raw.parse().unwrap()))
+                    .expect("adding constant to chunk");
                 self.write_instruction(Instruction::Constant(idx));
                 self.advance();
             }

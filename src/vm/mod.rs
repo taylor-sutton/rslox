@@ -141,18 +141,16 @@ impl Chunk {
     }
 
     /// Add a constant to the chunk's constants table, returning its index.
-    pub fn add_constant(&mut self, constant: Value) -> u8 {
-        let idx = match u8::try_from(self.constants.len()) {
-            Ok(u) => u,
-            Err(_) => panic!("tried to add more than {} constants", u8::MAX), // TODO fix panic
-        };
+    pub fn add_constant(&mut self, constant: Value) -> Result<u8, InterpretError> {
+        let idx =
+            u8::try_from(self.constants.len()).map_err(|_| InterpretError::TooManyConstants)?;
 
         self.constants.push(constant);
-        idx
+        Ok(idx)
     }
 
     fn get_constant(&self, idx: u8) -> &Value {
-        &self.constants[usize::from(idx)] // TODO can panic
+        &self.constants[usize::from(idx)]
     }
 
     fn disassemble_instruction(&self, instruction: &Instruction, ip: usize) -> String {
@@ -229,6 +227,8 @@ pub enum InterpretError {
     CompileError,
     /// TODO RuntimeError is returned when...
     RuntimeError,
+    /// An internal error due to Chunks having a limited number of slots for constants.
+    TooManyConstants,
 }
 
 impl Vm {

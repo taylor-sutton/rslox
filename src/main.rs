@@ -1,22 +1,36 @@
-use rslox::vm::{self, *};
+use std::env;
+use std::fs::File;
+use std::io::{self, Read};
+use std::process;
+
+use rslox::interpret;
 
 fn main() {
-    let mut chunk = Chunk::new();
-    let idx = chunk.add_constant(Value::Number(1.2));
-    chunk.write_instruction(Instruction::Constant(idx), 1);
+    let args: Vec<_> = env::args().collect();
+    println!("{:?}", args);
 
-    let idx = chunk.add_constant(Value::Number(3.4));
-    chunk.write_instruction(Instruction::Constant(idx), 2);
+    if args.len() == 1 {
+        repl()
+    } else if args.len() == 1 {
+        run_file(&args[1])
+    } else {
+        eprintln!("Usage: rslox [file]");
+        process::exit(64);
+    }
+}
 
-    chunk.write_instruction(Instruction::Add, 3);
-
-    let idx = chunk.add_constant(Value::Number(5.6));
-    chunk.write_instruction(Instruction::Constant(idx), 2);
-
-    chunk.write_instruction(Instruction::Divide, 2);
-
-    chunk.write_instruction(Instruction::Negate, 2);
-    chunk.write_instruction(Instruction::Return, 3);
-    let mut machine = vm::Vm::new(chunk);
-    machine.interpret().unwrap();
+fn repl() {
+    let mut buf = String::new();
+    loop {
+        print!("> ");
+        io::stdin().read_line(&mut buf).expect("reading from stdin");
+        interpret(&buf).unwrap();
+        buf.clear();
+    }
+}
+fn run_file(path: &str) {
+    let mut file = File::open(path).expect("opening file");
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).expect("reading file");
+    interpret(&contents).unwrap();
 }
