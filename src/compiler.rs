@@ -1,15 +1,15 @@
-#![allow(missing_docs)]
-
 // I found https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
 // to e a very helpful guide to writing a Pratt parser in Rust.
 
 use crate::{
-    scanner::{Scanner, Token, TokenType},
+    scanner::{Token, TokenType},
     vm::{Chunk, Instruction, Value},
 };
 
+// Parser takes a source of tokens, and spits out a chunk.
+// It writes to stderr on errors. The public API for Parser is the compile() function.
 #[derive(Debug)]
-pub struct Parser<'a, T> {
+struct Parser<'a, T> {
     tokens: T,
     chunk: Chunk,
     current_token: Token<'a>,
@@ -209,7 +209,12 @@ where
     }
 }
 
-pub fn compile(mut tokens: Scanner<'_>) -> Option<Chunk> {
+/// Take a source of tokens, attempt to compile it (writing errors to stderr)
+/// and if compilation succeeds, return the chunk.
+pub fn compile<'a, T>(mut tokens: T) -> Option<Chunk>
+where
+    T: Iterator<Item = Token<'a>>,
+{
     let first_token = tokens.next().unwrap();
     let mut parser = Parser {
         tokens,
@@ -228,6 +233,7 @@ pub fn compile(mut tokens: Scanner<'_>) -> Option<Chunk> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::scanner::Scanner;
 
     #[test]
     fn test_thing() {

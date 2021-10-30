@@ -1,13 +1,12 @@
 use std::env;
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::process;
 
 use rslox::interpret;
 
 fn main() {
     let args: Vec<_> = env::args().collect();
-    println!("{:?}", args);
 
     if args.len() == 1 {
         repl()
@@ -22,10 +21,18 @@ fn main() {
 fn repl() {
     let mut buf = String::new();
     loop {
-        print!("> ");
-        io::stdin().read_line(&mut buf).expect("reading from stdin");
-        interpret(&buf).unwrap();
         buf.clear();
+        print!("> ");
+        io::stdout().flush().unwrap();
+        io::stdin().read_line(&mut buf).expect("reading from stdin");
+        if buf == "\n" {
+            continue;
+        } else if buf.is_empty() {
+            println!();
+            break;
+        }
+        interpret(&buf).unwrap_or_else(|e| println!("Interpret error: {:?}", e));
+        io::stdout().flush().unwrap();
     }
 }
 fn run_file(path: &str) {

@@ -70,12 +70,17 @@ pub enum TokenType {
 /// Token is a single token, including a ref to the raw characters that constitute it
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token<'a> {
+    /// Type of token.
     pub typ: TokenType,
-    // The Cow is to handle Error tokens
+    /// Raw text of the token.
+    /// In most cases, raw will be a Cow::Borrowed to the original source.
+    /// Cow lets us be a little flexible, in particular we can insert error tokens
+    /// with dynamically generated text
     // If we are okay to stick to constant errors, those are actually static, so
     // we wouldn't not need the Cow, since 'static: 'a for all 'a.
     // But if we want to mix raw as non-static String errors plus refs to the input, Cow lets us.
     pub raw: Cow<'a, str>,
+    /// Line number of the token, used for error reporting.
     pub line: usize,
 }
 
