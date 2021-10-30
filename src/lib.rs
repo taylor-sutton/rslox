@@ -6,3 +6,6 @@ pub mod vm;
 
 /// scanner scans!
 pub mod scanner;
+
+/// Takes tokens from the scanner and emits bytecode
+pub mod compiler;

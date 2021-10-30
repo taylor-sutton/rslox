@@ -70,13 +70,13 @@ pub enum TokenType {
 /// Token is a single token, including a ref to the raw characters that constitute it
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token<'a> {
-    typ: TokenType,
+    pub typ: TokenType,
     // The Cow is to handle Error tokens
     // If we are okay to stick to constant errors, those are actually static, so
     // we wouldn't not need the Cow, since 'static: 'a for all 'a.
     // But if we want to mix raw as non-static String errors plus refs to the input, Cow lets us.
-    raw: Cow<'a, str>,
-    line: usize,
+    pub raw: Cow<'a, str>,
+    pub line: usize,
 }
 
 impl<'a> Scanner<'a> {
