@@ -1,5 +1,23 @@
+// The book's presentation of Pratt parsing confused me, so here are some notes I have.
+// In particular, the book's use of inplicit state stored in the Parser was confusing for me - I couldn't figure out
+// the invariant of which tokens were supposed to be in 'current' and 'previous' at different points during the parse.
 // I found https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
-// to e a very helpful guide to writing a Pratt parser in Rust.
+// to be a very helpful guide to writing a Pratt parser ( happens to be in Rust, but may
+// be helpuful to anyone).
+// In particular, the matklad post illustrates that the parser does not need to be stateful
+// (there's no Parser struct in his post, just a parsing function) and that the only API the token source needs
+// for the core loop is just tokens.peek(): look at next token, and tokens.next(): move forward one token.
+// I've adapted my Parser struct to use this simpler, less stateful interface.
+// My parser only stores the first token - the equivalent of tokens.peek(). Storing it in the struct can make
+// it a littler easier, so we don't have to pass it as arguments to helper methods all the time.
+// And then I store a token source which can give us the next token via next().
+// In addition, I've adapted the mapping of tokens to parsing functions and precedences.
+// Rather than one monolithic table, we just use Rust's match expression, since what is a table lookup but
+// a match expression anyway. It's simpler and more idiomatic Rust to do it with match{}.
+// Also, I've used an enum instead of an integer for precedence, because it's more readable and because
+// it means all the stuff that would need to change if we introduced more prec levels would be all in one place.
+// Using tables is probably a teeny bit faster, but that seems like premature optimization.
+// There are crates which provide macros for doing such things with enums, though.
 
 use crate::{
     scanner::{Token, TokenType},
@@ -51,18 +69,21 @@ mod precedence {
                 Unary => Call,
                 Call => Primary,
                 Primary => Top,
-                Top => Top,
+                Top => {
+                    // Shrug
+                    unreachable!("since no operator has prec of Top, should never call next on Top")
+                }
             }
         }
     }
 
-    pub const fn bottom_precedence() -> Precedence {
+    pub const fn least_precedence() -> Precedence {
         Precedence::Bottom
     }
 
     use crate::scanner::TokenType;
 
-    pub fn infix_precedence(typ: &TokenType) -> Option<Precedence> {
+    pub const fn infix_precedence(typ: &TokenType) -> Option<Precedence> {
         match typ {
             TokenType::Minus => Some(Term),
             TokenType::Plus => Some(Term),
@@ -79,6 +100,8 @@ impl<'a, T> Parser<'a, T>
 where
     T: Iterator<Item = Token<'a>>,
 {
+    // Our parser is stateful; if you call compile on it, it returns whether the operation succeeded or failed.
+    // If it succeeded, the Chunk is available in self.Chunk, otherwise, that chunk may be nonsense bytecode.
     fn compile(&mut self) -> bool {
         self.expression();
         if self.current_token.typ != TokenType::Eof {
@@ -89,6 +112,7 @@ where
         self.had_error
     }
 
+    // advance is more than just calling next on the token source - it also skips over error tokens.
     fn advance(&mut self) {
         self.current_token = loop {
             let next = self.tokens.next().expect("TODO handle ran-out-of-tokens");
@@ -100,6 +124,7 @@ where
         };
     }
 
+    // Advance if the next token is of the given type, error if the types mismatch
     fn consume(&mut self, expected_type: TokenType, message_if_missing: &str) {
         if self.current_token.typ == expected_type {
             self.advance();
@@ -107,33 +132,40 @@ where
             self.error(message_if_missing);
         }
     }
-    fn expression(&mut self) {
-        self.expression_with_min_prec(bottom_precedence());
-    }
 
     // The contract of this function is to consume an expression and emit bytecode to the chunk
     // such that the bytecode is a stack-ified verrsion of the expression e.g.
     // if the tokens are 1 + 2, it should emit two constant instructions then an add.
+    fn expression(&mut self) {
+        self.expression_with_min_prec(least_precedence());
+    }
+
+    // Same contract as expression() regarding parsing an expression and emitting bytecode, but
+    // stop if we encounter an operator with precendence strictly less than min.
+    // This is the core Pratt loop.
     fn expression_with_min_prec(&mut self, min_precedence: Precedence) {
         // We expect the first token to be either a prefix operator, or an atom
+        let current_line = self.current_token.line;
         match self.current_token.typ {
             TokenType::Number => {
                 let idx = self
                     .chunk
                     .add_constant(Value::Number(self.current_token.raw.parse().unwrap()))
                     .expect("adding constant to chunk");
-                self.write_instruction(Instruction::Constant(idx));
+                self.write_instruction(Instruction::Constant(idx), current_line);
                 self.advance();
             }
             TokenType::LeftParen => {
                 self.advance();
-                self.expression_with_min_prec(bottom_precedence()); // parens reset the precedence
+                self.expression_with_min_prec(least_precedence()); // parens reset the precedence
+
+                // the error will be after the expr, which is not ideal, but it's ok
                 self.consume(TokenType::RightParen, "Expecting ')' after expression.")
             }
             TokenType::Minus => {
                 self.advance();
                 self.expression_with_min_prec(Precedence::Unary);
-                self.write_instruction(Instruction::Negate);
+                self.write_instruction(Instruction::Negate, current_line);
             }
             _ => {
                 self.error("Got unexpected token at beginning of expression.");
@@ -143,6 +175,7 @@ where
 
         loop {
             let next_typ = self.current_token.typ;
+            let current_line = self.current_token.line;
 
             let prec = match infix_precedence(&next_typ) {
                 Some(prec) => prec,
@@ -157,16 +190,16 @@ where
 
             match next_typ {
                 TokenType::Minus => {
-                    self.write_instruction(Instruction::Subtract);
+                    self.write_instruction(Instruction::Subtract, current_line);
                 }
                 TokenType::Plus => {
-                    self.write_instruction(Instruction::Add);
+                    self.write_instruction(Instruction::Add, current_line);
                 }
                 TokenType::Slash => {
-                    self.write_instruction(Instruction::Divide);
+                    self.write_instruction(Instruction::Divide, current_line);
                 }
                 TokenType::Star => {
-                    self.write_instruction(Instruction::Multiply);
+                    self.write_instruction(Instruction::Multiply, current_line);
                 }
                 _ => {
                     self.error("Unepxected token in infix operator position.");
@@ -176,13 +209,13 @@ where
         }
     }
 
-    fn write_instruction(&mut self, instruction: Instruction) {
-        self.chunk
-            .write_instruction(instruction, self.current_token.line)
+    // Convenience wrapper to write an instruction to the chunk with the current line.
+    fn write_instruction(&mut self, instruction: Instruction, line: usize) {
+        self.chunk.write_instruction(instruction, line)
     }
 
     fn end_compile(&mut self) {
-        self.write_instruction(Instruction::Return);
+        self.write_instruction(Instruction::Return, self.current_token.line);
     }
 
     fn error(&mut self, message: &str) {
