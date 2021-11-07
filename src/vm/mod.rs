@@ -6,11 +6,11 @@ use std::{
 macro_rules! binary_arithmetic {
     ($self:ident, $op:tt) => {
 	{
-            let b = $self.stack_pop()?;
-	    let Value::Number(b) = b;
-            let a = $self.stack_pop()?;
-	    let Value::Number(a) = a;
-	    $self.stack_push(Value::Number(a $op b))
+            let b = $self.stack_pop()?.to_float()?;
+            let a = $self.stack_pop()?.to_float()?;
+	    // Lox is lax about comparing NaNs and stuff
+	    #[allow(clippy::float_cmp)]
+	    $self.stack_push((a $op b).into())
 	}
     };
 }
@@ -38,17 +38,38 @@ pub enum Instruction {
     Multiply,
     /// If stack is TOP: b, a ..., pop two and push (a/b)
     Divide,
+    /// Put Nil on the stack
+    Nil,
+    /// Put false on the stack
+    False,
+    /// Put true on the stack
+    True,
+    /// Logical negation of the top stack item
+    Not,
+    /// Pop two and push a bool for if they are equal or not
+    Equal,
+    /// If stack is TOP: b, a, ..., push the bool a>b
+    Greater,
+    /// If stack is TOP: b, a, ..., push the bool a<b
+    Less,
 }
 
-const RETURN_OP_CODE: u8 = 0;
-const CONSTANT_OP_CODE: u8 = 1;
-const NEGATE_OP_CODE: u8 = 2;
-const ADD_OP_CODE: u8 = 3;
-const SUBTRACT_OP_CODE: u8 = 4;
-const MULTIPLY_OP_CODE: u8 = 5;
-const DIVIDE_OP_CODE: u8 = 6;
-
 impl Instruction {
+    const OP_CODE_RETURN: u8 = 0;
+    const OP_CODE_CONSTANT: u8 = 1;
+    const OP_CODE_NEGATE: u8 = 2;
+    const OP_CODE_ADD: u8 = 3;
+    const OP_CODE_SUBTRACT: u8 = 4;
+    const OP_CODE_MULTIPLY: u8 = 5;
+    const OP_CODE_DIVIDE: u8 = 6;
+    const OP_CODE_NIL: u8 = 7;
+    const OP_CODE_FALSE: u8 = 8;
+    const OP_CODE_TRUE: u8 = 9;
+    const OP_CODE_NOT: u8 = 10;
+    const OP_CODE_EQUAL: u8 = 11;
+    const OP_CODE_GREATER: u8 = 12;
+    const OP_CODE_LESS: u8 = 13;
+
     /// Try to parse an instruction from the beginning of some bytes, returning the number of bytes that the instruction consists of
     /// on success in addition.
     pub fn from_bytes(bytes: &[u8]) -> Option<(Instruction, usize)> {
@@ -56,9 +77,9 @@ impl Instruction {
             return None;
         }
         match bytes[0] {
-            RETURN_OP_CODE => Some((Instruction::Return, 1)),
-            CONSTANT_OP_CODE => Some((Instruction::Constant(bytes[1]), 2)), // TODO can panic if OOB
-            _ => None,
+            Instruction::OP_CODE_RETURN => Some((Instruction::Return, 1)),
+            Instruction::OP_CODE_CONSTANT => Some((Instruction::Constant(bytes[1]), 2)), // TODO can panic if OOB
+            _ => todo!(),
         }
     }
 
@@ -69,26 +90,28 @@ impl Instruction {
         W: std::io::Write,
     {
         match self {
-            Self::Return => writer.write(&[RETURN_OP_CODE]),
-            Self::Constant(u) => writer.write(&[CONSTANT_OP_CODE, *u]),
-            Self::Negate => writer.write(&[NEGATE_OP_CODE]),
-            Self::Add => writer.write(&[ADD_OP_CODE]),
-            Self::Subtract => writer.write(&[SUBTRACT_OP_CODE]),
-            Self::Multiply => writer.write(&[MULTIPLY_OP_CODE]),
-            Self::Divide => writer.write(&[DIVIDE_OP_CODE]),
+            Self::Return => writer.write(&[Instruction::OP_CODE_RETURN]),
+            Self::Constant(u) => writer.write(&[Instruction::OP_CODE_CONSTANT, *u]),
+            Self::Negate => writer.write(&[Instruction::OP_CODE_NEGATE]),
+            Self::Not => writer.write(&[Instruction::OP_CODE_NOT]),
+            Self::Add => writer.write(&[Instruction::OP_CODE_ADD]),
+            Self::Subtract => writer.write(&[Instruction::OP_CODE_SUBTRACT]),
+            Self::Multiply => writer.write(&[Instruction::OP_CODE_MULTIPLY]),
+            Self::Divide => writer.write(&[Instruction::OP_CODE_DIVIDE]),
+            Self::False => writer.write(&[Instruction::OP_CODE_FALSE]),
+            Self::True => writer.write(&[Instruction::OP_CODE_TRUE]),
+            Self::Nil => writer.write(&[Instruction::OP_CODE_NIL]),
+            Self::Equal => writer.write(&[Instruction::OP_CODE_EQUAL]),
+            Self::Less => writer.write(&[Instruction::OP_CODE_LESS]),
+            Self::Greater => writer.write(&[Instruction::OP_CODE_GREATER]),
         }
     }
 
     /// Number of bytes in the byte represention of this instruction
     pub fn num_bytes(&self) -> usize {
         match self {
-            Instruction::Return => 1,
             Instruction::Constant(_) => 2,
-            Instruction::Negate => 1,
-            Instruction::Add => 1,
-            Instruction::Subtract => 1,
-            Instruction::Multiply => 1,
-            Instruction::Divide => 1,
+            _ => 1,
         }
     }
 }
@@ -111,6 +134,13 @@ impl Display for Instruction {
             Instruction::Subtract => write!(f, "OP_SUBTRACT"),
             Instruction::Multiply => write!(f, "OP_MULTIPLY"),
             Instruction::Divide => write!(f, "OP_DIVIDE"),
+            Instruction::Nil => write!(f, "OP_NIL"),
+            Instruction::False => write!(f, "OP_FALSE"),
+            Instruction::True => write!(f, "OP_TRUE"),
+            Instruction::Not => write!(f, "OP_NOT"),
+            Instruction::Equal => write!(f, "OP_EQUAL"),
+            Instruction::Greater => write!(f, "OP_GREATER"),
+            Instruction::Less => write!(f, "OP_LESS"),
         }
     }
 }
@@ -192,14 +222,60 @@ impl Default for Chunk {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     /// Lox has a single 'number' base type, backed by f64.
+    /// Even though pos/neg infinity and NaN are allowed, we make no guarantees about how they work.
+    /// In particular, equality and ordering may be broken for those values.
     Number(f64),
+    /// Boolean backed by Rust bool,
+    Boolean(bool),
+    /// Nil is a type and a value in Lox.
+    Nil,
 }
 
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Number(val) => write!(f, "{}", val),
+            Self::Boolean(b) => write!(f, "{}", b),
+            Self::Nil => write!(f, "<nil>"),
         }
+    }
+}
+
+impl Value {
+    fn to_float(&self) -> Result<f64, InterpretError> {
+        if let Value::Number(f) = self {
+            Ok(*f)
+        } else {
+            Err(InterpretError::RuntimeError)
+        }
+    }
+
+    fn to_boolean(&self) -> Result<bool, InterpretError> {
+        if let Value::Boolean(b) = self {
+            Ok(*b)
+        } else {
+            Err(InterpretError::RuntimeError)
+        }
+    }
+
+    fn is_falsey(&self) -> bool {
+        match self {
+            Value::Boolean(b) => *b,
+            Value::Nil => true,
+            _ => false,
+        }
+    }
+}
+
+impl From<f64> for Value {
+    fn from(f: f64) -> Self {
+        Value::Number(f)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(b: bool) -> Self {
+        Value::Boolean(b)
     }
 }
 
@@ -268,19 +344,32 @@ impl Vm {
                 Ok(())
             }
             Instruction::Constant(idx) => self.stack_push(self.chunk.get_constant(*idx).clone()),
+            Instruction::Nil => self.stack_push(Value::Nil),
+            Instruction::False => self.stack_push(Value::Boolean(false)),
+            Instruction::True => self.stack_push(Value::Boolean(true)),
             Instruction::Negate => {
                 let value = self.stack_pop()?;
-                #[allow(irrefutable_let_patterns)]
                 if let Value::Number(number) = value {
                     self.stack_push(Value::Number(-number))
                 } else {
                     Err(InterpretError::RuntimeError)
                 }
             }
+            Instruction::Not => {
+                let value = self.stack_pop()?;
+                self.stack_push(Value::Boolean(!value.is_falsey()))
+            }
             Instruction::Add => binary_arithmetic!(self, +),
             Instruction::Subtract => binary_arithmetic!(self, -),
             Instruction::Multiply => binary_arithmetic!(self, *),
             Instruction::Divide => binary_arithmetic!(self, /),
+            Instruction::Equal => {
+                let b = self.stack_pop()?;
+                let a = self.stack_pop()?;
+                self.stack_push(Value::Boolean(a == b))
+            }
+            Instruction::Greater => binary_arithmetic!(self, >),
+            Instruction::Less => binary_arithmetic!(self, <),
         }
     }
 
@@ -297,3 +386,5 @@ impl Vm {
         self.stack.pop().ok_or(InterpretError::RuntimeError)
     }
 }
+
+// TODO error messages for runtime errors

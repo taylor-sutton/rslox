@@ -89,6 +89,12 @@ mod precedence {
             TokenType::Plus => Some(Term),
             TokenType::Slash => Some(Factor),
             TokenType::Star => Some(Factor),
+            TokenType::EqualEqual => Some(Comparison),
+            TokenType::BangEqual => Some(Comparison),
+            TokenType::Less => Some(Comparison),
+            TokenType::Greater => Some(Comparison),
+            TokenType::LessEqual => Some(Comparison),
+            TokenType::GreaterEqual => Some(Comparison),
             _ => None,
         }
     }
@@ -155,6 +161,18 @@ where
                 self.write_instruction(Instruction::Constant(idx), current_line);
                 self.advance();
             }
+            TokenType::Nil => {
+                self.write_instruction(Instruction::Nil, current_line);
+                self.advance();
+            }
+            TokenType::True => {
+                self.write_instruction(Instruction::True, current_line);
+                self.advance();
+            }
+            TokenType::False => {
+                self.write_instruction(Instruction::False, current_line);
+                self.advance();
+            }
             TokenType::LeftParen => {
                 self.advance();
                 self.expression_with_min_prec(least_precedence()); // parens reset the precedence
@@ -166,6 +184,11 @@ where
                 self.advance();
                 self.expression_with_min_prec(Precedence::Unary);
                 self.write_instruction(Instruction::Negate, current_line);
+            }
+            TokenType::Bang => {
+                self.advance();
+                self.expression_with_min_prec(Precedence::Unary);
+                self.write_instruction(Instruction::Not, current_line);
             }
             _ => {
                 self.error("Got unexpected token at beginning of expression.");
@@ -189,17 +212,24 @@ where
             self.expression_with_min_prec(prec.next());
 
             match next_typ {
-                TokenType::Minus => {
-                    self.write_instruction(Instruction::Subtract, current_line);
+                TokenType::Minus => self.write_instruction(Instruction::Subtract, current_line),
+                TokenType::Plus => self.write_instruction(Instruction::Add, current_line),
+                TokenType::Slash => self.write_instruction(Instruction::Divide, current_line),
+                TokenType::Star => self.write_instruction(Instruction::Multiply, current_line),
+                TokenType::EqualEqual => self.write_instruction(Instruction::Equal, current_line),
+                TokenType::BangEqual => {
+                    self.write_instruction(Instruction::Equal, current_line);
+                    self.write_instruction(Instruction::Not, current_line);
                 }
-                TokenType::Plus => {
-                    self.write_instruction(Instruction::Add, current_line);
+                TokenType::Less => self.write_instruction(Instruction::Less, current_line),
+                TokenType::GreaterEqual => {
+                    self.write_instruction(Instruction::Less, current_line);
+                    self.write_instruction(Instruction::Not, current_line)
                 }
-                TokenType::Slash => {
-                    self.write_instruction(Instruction::Divide, current_line);
-                }
-                TokenType::Star => {
-                    self.write_instruction(Instruction::Multiply, current_line);
+                TokenType::Greater => self.write_instruction(Instruction::Greater, current_line),
+                TokenType::LessEqual => {
+                    self.write_instruction(Instruction::Greater, current_line);
+                    self.write_instruction(Instruction::Not, current_line);
                 }
                 _ => {
                     self.error("Unepxected token in infix operator position.");
