@@ -12,11 +12,11 @@ pub mod compiler;
 
 /// End-to-end hook-up of the whole intepreter.
 /// State is not preserved between calls (yet).
-pub fn interpret(src: &str) -> Result<(), vm::InterpretError> {
+pub fn interpret(src: &str) -> Result<(), vm::LoxError> {
     let s = scanner::Scanner::new(src);
     let c = compiler::compile(s);
     match c {
-        None => Err(vm::InterpretError::CompileError),
+        None => Err(vm::LoxError::SyntaxError),
         Some(c) => vm::Vm::new(c).interpret(),
     }
 }

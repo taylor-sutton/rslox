@@ -3,6 +3,8 @@ use std::{
     fmt::{Display, Write},
 };
 
+use thiserror::Error;
+
 macro_rules! binary_arithmetic {
     ($self:ident, $op:tt) => {
 	{
@@ -171,9 +173,9 @@ impl Chunk {
     }
 
     /// Add a constant to the chunk's constants table, returning its index.
-    pub fn add_constant(&mut self, constant: Value) -> Result<u8, InterpretError> {
-        let idx =
-            u8::try_from(self.constants.len()).map_err(|_| InterpretError::TooManyConstants)?;
+    pub fn add_constant(&mut self, constant: Value) -> Result<u8, LoxError> {
+        let idx = u8::try_from(self.constants.len())
+            .map_err(|_| LoxError::InternalError(InternalError::TooManyConstants))?;
 
         self.constants.push(constant);
         Ok(idx)
@@ -242,19 +244,19 @@ impl Display for Value {
 }
 
 impl Value {
-    fn to_float(&self) -> Result<f64, InterpretError> {
+    fn to_float(&self) -> Result<f64, LoxError> {
         if let Value::Number(f) = self {
             Ok(*f)
         } else {
-            Err(InterpretError::RuntimeError)
+            Err(LoxError::RuntimeError)
         }
     }
 
-    fn to_boolean(&self) -> Result<bool, InterpretError> {
+    fn to_boolean(&self) -> Result<bool, LoxError> {
         if let Value::Boolean(b) = self {
             Ok(*b)
         } else {
-            Err(InterpretError::RuntimeError)
+            Err(LoxError::RuntimeError)
         }
     }
 
@@ -279,6 +281,9 @@ impl From<bool> for Value {
     }
 }
 
+// There are more From impls we could imagine, for example, From<Option<T>> where T: Into<Value>
+// but we can hold off on them until they are useful
+
 const STACK_SIZE: usize = 256;
 
 /// A Vm is a stateful executor of chunks.
@@ -296,15 +301,31 @@ pub struct Vm {
 }
 
 /// Errors that can be returned by running the intepreter.
-// TODO impl Error
-#[derive(Debug, Clone)]
-pub enum InterpretError {
-    /// TODO CompileError is returned when...
-    CompileError,
-    /// TODO RuntimeError is returned when...
+#[derive(Debug, Clone, Error)]
+pub enum LoxError {
+    /// SyntaxError is for errors during scanning/parsing
+    #[error("syntax error")]
+    SyntaxError,
+    /// RuntimeError happens with runtime problems, like mismatched types
+    #[error("runtime error")]
     RuntimeError,
+    /// We have a hardcoded max stack size
+    #[error("stack overflow")]
+    StackOverflow,
+    /// Internal Errors should not occur for code that compiled successfully, but just in case.
+    #[error("lox internal error: {0}")]
+    InternalError(#[from] InternalError),
+}
+
+#[derive(Debug, Clone, Error)]
+/// VM error that should never come up in code that compiled correct
+pub enum InternalError {
     /// An internal error due to Chunks having a limited number of slots for constants.
+    #[error("tried to store more than the maximum number of constants in a chunk")]
     TooManyConstants,
+    /// Tried to get the top value from an empty stack
+    #[error("popped from an empty stack")]
+    EmptyStack,
 }
 
 impl Vm {
@@ -318,7 +339,7 @@ impl Vm {
     }
 
     /// Run the interpreter until code finishes executing or an error occurs.
-    pub fn interpret(&mut self) -> Result<(), InterpretError> {
+    pub fn interpret(&mut self) -> Result<(), LoxError> {
         while self.ip < self.chunk.code.len() {
             let instr = self.chunk.code[self.ip];
             #[cfg(feature = "trace")]
@@ -336,7 +357,7 @@ impl Vm {
         Ok(())
     }
 
-    fn execute(&mut self, instruction: &Instruction) -> Result<(), InterpretError> {
+    fn execute(&mut self, instruction: &Instruction) -> Result<(), LoxError> {
         match instruction {
             Instruction::Return => {
                 let val = self.stack_pop()?;
@@ -352,7 +373,7 @@ impl Vm {
                 if let Value::Number(number) = value {
                     self.stack_push(Value::Number(-number))
                 } else {
-                    Err(InterpretError::RuntimeError)
+                    Err(LoxError::RuntimeError)
                 }
             }
             Instruction::Not => {
@@ -373,18 +394,18 @@ impl Vm {
         }
     }
 
-    fn stack_push(&mut self, value: Value) -> Result<(), InterpretError> {
+    fn stack_push(&mut self, value: Value) -> Result<(), LoxError> {
         if self.stack.len() >= STACK_SIZE {
-            Err(InterpretError::RuntimeError)
+            Err(LoxError::StackOverflow)
         } else {
             self.stack.push(value);
             Ok(())
         }
     }
 
-    fn stack_pop(&mut self) -> Result<Value, InterpretError> {
-        self.stack.pop().ok_or(InterpretError::RuntimeError)
+    fn stack_pop(&mut self) -> Result<Value, LoxError> {
+        self.stack
+            .pop()
+            .ok_or_else(|| InternalError::TooManyConstants.into())
     }
 }
-
-// TODO error messages for runtime errors
