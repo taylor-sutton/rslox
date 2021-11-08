@@ -21,7 +21,7 @@
 
 use crate::{
     scanner::{Token, TokenType},
-    vm::{Chunk, Instruction, Value},
+    vm::{Chunk, Heap, Instruction, Value},
 };
 
 // Parser takes a source of tokens, and spits out a chunk.
@@ -33,6 +33,7 @@ struct Parser<'a, T> {
     current_token: Token<'a>,
     had_error: bool,
     in_panic_mode: bool,
+    heap: Heap,
 }
 
 mod precedence {
@@ -161,6 +162,17 @@ where
                 self.write_instruction(Instruction::Constant(idx), current_line);
                 self.advance();
             }
+            TokenType::String => {
+                let mut node = self.heap.push_string_node();
+                let s = node.as_string_mut().unwrap();
+                s.push_str(&self.current_token.raw);
+                let idx = self
+                    .chunk
+                    .add_constant(Value::Object(node))
+                    .expect("adding constant to chunk");
+                self.write_instruction(Instruction::Constant(idx), current_line);
+                self.advance();
+            }
             TokenType::Nil => {
                 self.write_instruction(Instruction::Nil, current_line);
                 self.advance();
@@ -190,6 +202,7 @@ where
                 self.expression_with_min_prec(Precedence::Unary);
                 self.write_instruction(Instruction::Not, current_line);
             }
+
             _ => {
                 self.error("Got unexpected token at beginning of expression.");
                 return;
@@ -274,7 +287,7 @@ where
 
 /// Take a source of tokens, attempt to compile it (writing errors to stderr)
 /// and if compilation succeeds, return the chunk.
-pub fn compile<'a, T>(mut tokens: T) -> Option<Chunk>
+pub fn compile<'a, T>(mut tokens: T) -> Option<(Chunk, Heap)>
 where
     T: Iterator<Item = Token<'a>>,
 {
@@ -285,9 +298,10 @@ where
         current_token: first_token,
         had_error: false,
         in_panic_mode: false,
+        heap: Heap::new(),
     };
     if !parser.compile() {
-        Some(parser.chunk)
+        Some((parser.chunk, parser.heap))
     } else {
         None
     }
@@ -303,7 +317,7 @@ mod test {
         let text = "(1 + 3 ) / -(-1 + -2)";
         let scanner = Scanner::new(text);
         let chunk = compile(scanner).expect("compiling succeeds");
-        let debug_text = chunk.disassemble("Test");
+        let debug_text = chunk.0.disassemble("Test");
         println!("{}", debug_text);
         // TODO figure out a good API for testing this
     }

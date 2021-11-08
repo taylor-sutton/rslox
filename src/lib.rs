@@ -17,6 +17,6 @@ pub fn interpret(src: &str) -> Result<(), vm::LoxError> {
     let c = compiler::compile(s);
     match c {
         None => Err(vm::LoxError::SyntaxError),
-        Some(c) => vm::Vm::new(c).interpret(),
+        Some((c, h)) => vm::Vm::new_with_heap(c, h).interpret(),
     }
 }
