@@ -318,7 +318,14 @@ mod heap {
         head: Option<HeapNode>,
     }
 
-    // Automatically !Sync and !Send, which is what we want.
+    // HeapNode upholds the following invariant:
+    // - Its pointer points at a non-null pointer
+    // - The pointer is valid as long as the heap it was allocated with hasn't been dropped.
+    // - A valid ObjectHeader can be read from it (i.e. it was allocated with a layout
+    //   beginning with the layout for ObjectHeader, and a valid ObjectHeader has been written there
+    // - If the header's Type is ObjectType::String, the entire layout is layout_for_string(), and
+    //   a valid String can be read from the string offset.
+    // Automatically !Sync and !Send, which is what we want: thread-safety is out of scope for me.
     #[derive(Debug)]
     pub struct HeapNode(*mut u8);
 
@@ -347,17 +354,30 @@ mod heap {
         /// Add an empty string to the heap, and return the node by which it can be accessed
         pub fn push_string_node(&mut self) -> HeapNode {
             let (layout, string_offset) = layout_for_string();
+            // SAFETY
+            // alloc is safe as long as layout is not zero-sized, which it is not.
             let ptr = unsafe { std::alloc::alloc(layout) };
             let header_ptr: *mut ObjectHeader = ptr.cast();
             let header = ObjectHeader {
                 next: self.head.take(),
                 typ: ObjectType::String,
             };
+            // SAFETY
+            // write is safe as long has the pointer we are writing to is valid and aligned
+            // which it is, as it was just constructed above with a layout that begins with
+            // the layout for ObjectHeader.
+            // And since we are writing a valid ObjectHeader, it's safe to read an ObjectHeader
+            // from this ptr in the future.
             unsafe { header_ptr.write(header) };
             self.head = Some(HeapNode(ptr));
+            // SAFETY
+            // Adding an offset from Layout::extend to a pointer allocated on that layout
+            // is safe.
             let body_ptr: *mut String = unsafe { ptr.add(string_offset) }.cast();
             // This string is getting dropped at the end of this func, which is breaking things
             let s = String::new();
+            // SAFETY
+            // Similar as the above ptr.add and header_ptr.write.
             unsafe { body_ptr.write(s) };
             HeapNode(ptr)
         }
@@ -407,8 +427,12 @@ mod heap {
                     ObjectType::String => {
                         let (l, offset) = layout_for_string();
                         layout = l;
+                        // Make sure the String's destructor runs.
+                        // SAFETY
+                        // HeapNodes uphold the invariant that if the tag is ObjectType::String,
+                        // then the layout is layout_for_string() and a valid string lives
+                        // at the string offset.
                         let string_ptr: *mut String = unsafe { node.0.add(offset) }.cast();
-                        // make sure the String's destructor runs
                         let _: String = unsafe { string_ptr.read() };
                     }
                 }
