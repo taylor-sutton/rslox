@@ -256,7 +256,9 @@ impl Display for Value {
             Self::Boolean(b) => write!(f, "{}", b),
             Self::Nil => write!(f, "<nil>"),
             Self::Object(o) => match o.typ() {
-                ObjectType::String => write!(f, "{}", o.as_obj().borrow().as_string().unwrap()),
+                ObjectType::String => {
+                    write!(f, r#""{}""#, o.as_obj().borrow().as_string().unwrap())
+                }
             },
         }
     }
@@ -414,7 +416,22 @@ impl Vm {
                 let value = self.stack_pop()?;
                 self.stack_push(Value::Boolean(!value.is_falsey()))
             }
-            Instruction::Add => binary_arithmetic!(self, +),
+            Instruction::Add => {
+                let b = self.stack_pop()?;
+                let a = self.stack_pop()?;
+                match (a, b) {
+                    (Value::Number(a), Value::Number(b)) => self.stack_push(Value::Number(a + b)),
+                    (Value::Object(a), Value::Object(b))
+                        if a.typ() == ObjectType::String && b.typ() == ObjectType::String =>
+                    {
+                        let mut s: String = a.as_obj().borrow().as_string().unwrap().clone();
+                        s.push_str(b.as_obj().borrow().as_string().unwrap());
+                        let new_value = Value::Object(self.heap.new_string_with_value(&s));
+                        self.stack_push(new_value)
+                    }
+                    _ => Err(LoxError::RuntimeError),
+                }
+            }
             Instruction::Subtract => binary_arithmetic!(self, -),
             Instruction::Multiply => binary_arithmetic!(self, *),
             Instruction::Divide => binary_arithmetic!(self, /),
@@ -499,6 +516,22 @@ mod heap {
             }
         }
 
+        /// Add an non-empty string to the heap, copying from value, and return the node by which it can be accessed
+        pub fn new_string_with_value(&mut self, value: &str) -> HeapRef {
+            let obj_in_rc = Rc::new(RefCell::new(Object {
+                typ: ObjectType::String,
+                value: Box::new(String::from(value)),
+            }));
+            let obj = HeapNode {
+                object: obj_in_rc.clone(),
+                next: self.head.take(),
+            };
+            self.head = Some(Box::new(obj));
+            HeapRef {
+                value: std::rc::Rc::downgrade(&obj_in_rc),
+            }
+        }
+
         /// Convert a HeapRef into the actual Object it referes to (behind shared ownership)
         pub fn ref_as_obj(&self, node: &HeapRef) -> Rc<RefCell<Object>> {
             node.value.upgrade().unwrap()
@@ -561,12 +594,7 @@ mod heap {
                 .unwrap()
                 .push_str("Goodbye, world");
 
-            let node = heap.new_string();
-            node.as_obj()
-                .borrow_mut()
-                .as_string_mut()
-                .unwrap()
-                .push_str("Hello, world");
+            heap.new_string_with_value("Hello, world");
 
             heap.dump();
         }

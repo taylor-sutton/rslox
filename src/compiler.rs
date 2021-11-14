@@ -163,12 +163,8 @@ where
                 self.advance();
             }
             TokenType::String => {
-                let node = self.heap.new_string();
-                node.as_obj()
-                    .borrow_mut()
-                    .as_string_mut()
-                    .unwrap()
-                    .push_str(&self.current_token.raw);
+                let without_quotes = &self.current_token.raw[1..self.current_token.raw.len() - 1];
+                let node = self.heap.new_string_with_value(without_quotes);
                 let idx = self
                     .chunk
                     .add_constant(Value::Object(node))
