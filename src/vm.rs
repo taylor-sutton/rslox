@@ -256,9 +256,7 @@ impl Display for Value {
             Self::Boolean(b) => write!(f, "{}", b),
             Self::Nil => write!(f, "<nil>"),
             Self::Object(o) => match o.typ() {
-                ObjectType::String => {
-                    write!(f, r#""{}""#, o.as_obj().borrow().as_string().unwrap())
-                }
+                ObjectType::String => o.map_as_string(|s| write!(f, r#""{}""#, s)).unwrap(),
             },
         }
     }
@@ -424,8 +422,8 @@ impl Vm {
                     (Value::Object(a), Value::Object(b))
                         if a.typ() == ObjectType::String && b.typ() == ObjectType::String =>
                     {
-                        let mut s: String = a.as_obj().borrow().as_string().unwrap().clone();
-                        s.push_str(b.as_obj().borrow().as_string().unwrap());
+                        let mut s: String = a.map_as_string(|x| x.clone()).unwrap();
+                        b.map_as_string(|bs| s.push_str(bs)).unwrap();
                         let new_value = Value::Object(self.heap.new_string_with_value(&s));
                         self.stack_push(new_value)
                     }
@@ -464,6 +462,7 @@ impl Vm {
 mod heap {
     use std::any::Any;
     use std::cell::RefCell;
+    use std::ops::{Deref, DerefMut};
     use std::rc::{Rc, Weak};
 
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -481,6 +480,19 @@ mod heap {
     struct HeapNode {
         next: Option<Box<HeapNode>>,
         object: Rc<RefCell<Object>>,
+    }
+
+    #[derive(Debug)]
+    pub struct SharedObject(Rc<RefCell<Object>>);
+
+    impl SharedObject {
+        pub fn borrow(&self) -> impl Deref<Target = Object> + '_ {
+            self.0.borrow()
+        }
+
+        pub fn borrow_mut(&self) -> impl DerefMut<Target = Object> + '_ {
+            self.0.borrow_mut()
+        }
     }
 
     #[derive(Debug, Clone)]
@@ -532,11 +544,6 @@ mod heap {
             }
         }
 
-        /// Convert a HeapRef into the actual Object it referes to (behind shared ownership)
-        pub fn ref_as_obj(&self, node: &HeapRef) -> Rc<RefCell<Object>> {
-            node.value.upgrade().unwrap()
-        }
-
         #[allow(dead_code)]
         fn dump(&self) {
             let mut next = &self.head;
@@ -576,8 +583,21 @@ mod heap {
             self.value.upgrade().unwrap().borrow().typ
         }
 
-        pub fn as_obj(&self) -> Rc<RefCell<Object>> {
-            self.value.upgrade().unwrap()
+        pub fn as_obj(&self) -> SharedObject {
+            SharedObject(self.value.upgrade().unwrap())
+        }
+        pub fn map_as_string<F, Ret>(&self, f: F) -> Option<Ret>
+        where
+            F: FnOnce(&String) -> Ret,
+        {
+            Some(f(self.as_obj().0.borrow().value.downcast_ref()?))
+        }
+
+        pub fn map_as_string_mut<F, Ret>(&self, f: F) -> Option<Ret>
+        where
+            F: FnOnce(&mut String) -> Ret,
+        {
+            Some(f(self.as_obj().0.borrow_mut().value.downcast_mut()?))
         }
     }
 
