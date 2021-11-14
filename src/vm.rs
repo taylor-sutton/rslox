@@ -239,11 +239,11 @@ impl PartialEq for Value {
             (Self::Number(l0), Self::Number(r0)) => l0 == r0,
             (Self::Boolean(l0), Self::Boolean(r0)) => l0 == r0,
             (Self::Nil, Self::Nil) => true,
-            (Self::Object(l0), Self::Object(r0)) => match (l0.typ(), r0.typ()) {
-                (ObjectType::String, ObjectType::String) => {
-                    l0.as_obj().borrow().as_string() == r0.as_obj().borrow().as_string()
+            (Self::Object(l0), Self::Object(r0)) => {
+                match (&*l0.as_obj().borrow(), &*r0.as_obj().borrow()) {
+                    (Object::String(s1), Object::String(s2)) => s1 == s2,
                 }
-            },
+            }
             _ => false,
         }
     }
@@ -255,8 +255,8 @@ impl Display for Value {
             Self::Number(val) => write!(f, "{}", val),
             Self::Boolean(b) => write!(f, "{}", b),
             Self::Nil => write!(f, "<nil>"),
-            Self::Object(o) => match o.typ() {
-                ObjectType::String => o.map_as_string(|s| write!(f, r#""{}""#, s)).unwrap(),
+            Self::Object(o) => match &*o.as_obj().borrow() {
+                Object::String(s) => write!(f, r#""{}""#, s),
             },
         }
     }
@@ -419,11 +419,12 @@ impl Vm {
                 let a = self.stack_pop()?;
                 match (a, b) {
                     (Value::Number(a), Value::Number(b)) => self.stack_push(Value::Number(a + b)),
-                    (Value::Object(a), Value::Object(b))
-                        if a.typ() == ObjectType::String && b.typ() == ObjectType::String =>
-                    {
-                        let mut s: String = a.map_as_string(|x| x.clone()).unwrap();
-                        b.map_as_string(|bs| s.push_str(bs)).unwrap();
+                    (Value::Object(a), Value::Object(b)) => {
+                        let mut s: String = a
+                            .map_as_string(|x| x.clone())
+                            .ok_or(LoxError::RuntimeError)?;
+                        b.map_as_string(|bs| s.push_str(bs))
+                            .ok_or(LoxError::RuntimeError)?;
                         let new_value = Value::Object(self.heap.new_string_with_value(&s));
                         self.stack_push(new_value)
                     }
@@ -459,29 +460,49 @@ impl Vm {
     }
 }
 
+/// heap is our internal interface for allocating objects that can be tracked and GCed. Currently it does not GC,
+/// merely allocates and tracks.
+///
+/// The entry point is the `Heap` type and its `new_*` methods. These methods allocate a new Lox object and return a reference
+/// which can be used to access the object: a `HeapRef`. In the future, the `HeapRef` will kept in an alive, usable state as long as it is
+/// reachable from a GC root; for now it just lives as long as the Heap does. The underlying objects are all owned by the Heap, so they will
+/// be invalid if he Heap is dropped. It is not undefined behavior to store and access HeapRef that is no longer alive - but it will panic.
+/// Because of the shared ownership model, values on the heap must be accessed through special APIs.
+///
+/// ```rust
+///    let mut heap = Heap::new();
+///    let string_ref = heap.new_string_with_value("my string");
+///    // the `map_as_*` method can access the inner value in a convenient way.
+///    string_ref.map_as_string(|s| assert_eq!(s, "my string"));
+///    // Alternately, the HeapRef can be converted the long way:
+///    let shared_obj: SharedObject = heap_ref.as_obj();
+///    match shared_obj.borrow() {
+///        Object::String(s) => assert_eq!(s, "my string"),
+///    };
+/// ```
+///
+/// Internally, the Heap keeps an ``Rc<RefCell<_>>`` and hands out `Weak<RefCell<_>>`. That way, the heap ref is only alive as long as the heap
+/// keeps it alive. The HeapRef uses RefCell's runtime borrow checking, meaning that it can be a runtime panic to use incorrectly.
 mod heap {
-    use std::any::Any;
     use std::cell::RefCell;
     use std::ops::{Deref, DerefMut};
     use std::rc::{Rc, Weak};
 
-    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-    pub enum ObjectType {
-        String,
-    }
-
     #[derive(Debug)]
-    pub struct Object {
-        typ: ObjectType,
-        value: Box<dyn Any>,
+    pub enum Object {
+        String(String),
     }
 
+    // Internal representation of a heap object. The objects are arranged in a linked list using the `next` field, and the objects
+    // are owned by the nodes (with the head node owned by the Heap itself)
     #[derive(Debug)]
     struct HeapNode {
         next: Option<Box<HeapNode>>,
         object: Rc<RefCell<Object>>,
     }
 
+    // We hide the implementation details of the shared ownership + interior mutability behind this newtype.
+    // However, the `borrow` and `borrow_mut` methods mirror (and delegate to) the RefCell methods of the same name.
     #[derive(Debug)]
     pub struct SharedObject(Rc<RefCell<Object>>);
 
@@ -512,12 +533,13 @@ mod heap {
             Heap { head: None }
         }
 
-        /// Add an empty string to the heap, and return the node by which it can be accessed
+        /// Add an empty string to the heap, and return the node by which it can be accessed.
+        /// If you want to give the string a value ,us `new_string_with_value`, but this method
+        /// doesn't do the String's heap allocation (as it uses `String::new()`).
+        // I tried for a while to return a value that has a lifetime tied to lifetime of the heap,
+        // but couldn't make it work :(.
         pub fn new_string(&mut self) -> HeapRef {
-            let obj_in_rc = Rc::new(RefCell::new(Object {
-                typ: ObjectType::String,
-                value: Box::new(String::new()),
-            }));
+            let obj_in_rc = Rc::new(RefCell::new(Object::String(String::new())));
             let obj = HeapNode {
                 object: obj_in_rc.clone(),
                 next: self.head.take(),
@@ -528,12 +550,9 @@ mod heap {
             }
         }
 
-        /// Add an non-empty string to the heap, copying from value, and return the node by which it can be accessed
+        /// Add an non-empty string to the heap, copying from value, and return the node by which it can be accessed.
         pub fn new_string_with_value(&mut self, value: &str) -> HeapRef {
-            let obj_in_rc = Rc::new(RefCell::new(Object {
-                typ: ObjectType::String,
-                value: Box::new(String::from(value)),
-            }));
+            let obj_in_rc = Rc::new(RefCell::new(Object::String(String::from(value))));
             let obj = HeapNode {
                 object: obj_in_rc.clone(),
                 next: self.head.take(),
@@ -544,13 +563,14 @@ mod heap {
             }
         }
 
+        // Print out all the objects on the heap in linked list order for debugging.
         #[allow(dead_code)]
         fn dump(&self) {
             let mut next = &self.head;
             while let Some(node) = next {
-                match node.object.borrow().typ {
-                    ObjectType::String => {
-                        println!("{}", node.object.borrow().as_string().unwrap());
+                match &*node.object.borrow() {
+                    Object::String(s) => {
+                        println!("{}", s);
                     }
                 }
                 next = &node.next
@@ -565,39 +585,42 @@ mod heap {
     }
 
     impl Object {
-        pub fn typ(&self) -> ObjectType {
-            self.typ
+        pub fn is_string(&self) -> bool {
+            true
         }
 
         pub fn as_string(&self) -> Option<&String> {
-            self.value.downcast_ref()
+            let Object::String(s) = self;
+            Some(s)
         }
 
         pub fn as_string_mut(&mut self) -> Option<&mut String> {
-            self.value.downcast_mut()
+            let Object::String(s) = self;
+            Some(s)
         }
     }
 
     impl HeapRef {
-        pub fn typ(&self) -> ObjectType {
-            self.value.upgrade().unwrap().borrow().typ
-        }
-
+        // Convert a ref to an object, panicking if the ref is no longer alive.
         pub fn as_obj(&self) -> SharedObject {
             SharedObject(self.value.upgrade().unwrap())
         }
+
+        // Apply a function to the inner object if it's a string, returning the result if it's a string
+        // And none if it isn't a string
         pub fn map_as_string<F, Ret>(&self, f: F) -> Option<Ret>
         where
             F: FnOnce(&String) -> Ret,
         {
-            Some(f(self.as_obj().0.borrow().value.downcast_ref()?))
+            Some(f(self.as_obj().borrow().as_string()?))
         }
 
+        // Same as map_as_string but with mutability.
         pub fn map_as_string_mut<F, Ret>(&self, f: F) -> Option<Ret>
         where
             F: FnOnce(&mut String) -> Ret,
         {
-            Some(f(self.as_obj().0.borrow_mut().value.downcast_mut()?))
+            Some(f(self.as_obj().borrow_mut().as_string_mut()?))
         }
     }
 
