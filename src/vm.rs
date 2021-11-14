@@ -1,7 +1,5 @@
-use std::{
-    convert::TryFrom,
-    fmt::{Display, Write},
-};
+use std::convert::TryFrom;
+use std::fmt::{Display, Write};
 
 use thiserror::Error;
 
@@ -232,7 +230,7 @@ pub enum Value {
     /// Nil is a type and a value in Lox.
     Nil,
     /// Object is a heap-allocated, garbage collected value
-    Object(HeapNode),
+    Object(HeapRef),
 }
 
 impl PartialEq for Value {
@@ -242,7 +240,9 @@ impl PartialEq for Value {
             (Self::Boolean(l0), Self::Boolean(r0)) => l0 == r0,
             (Self::Nil, Self::Nil) => true,
             (Self::Object(l0), Self::Object(r0)) => match (l0.typ(), r0.typ()) {
-                (ObjectType::String, ObjectType::String) => l0.as_string() == r0.as_string(),
+                (ObjectType::String, ObjectType::String) => {
+                    l0.as_obj().borrow().as_string() == r0.as_obj().borrow().as_string()
+                }
             },
             _ => false,
         }
@@ -256,7 +256,7 @@ impl Display for Value {
             Self::Boolean(b) => write!(f, "{}", b),
             Self::Nil => write!(f, "<nil>"),
             Self::Object(o) => match o.typ() {
-                ObjectType::String => write!(f, "{}", o.as_string().unwrap()),
+                ObjectType::String => write!(f, "{}", o.as_obj().borrow().as_string().unwrap()),
             },
         }
     }
@@ -289,225 +289,6 @@ impl From<f64> for Value {
 impl From<bool> for Value {
     fn from(b: bool) -> Self {
         Value::Boolean(b)
-    }
-}
-
-/// A heap for Lox values.
-///
-/// All heap-allocated Lox structures are owned by a heap, which has methods for allocating new
-/// objects and returns types that provide references to those objects.
-/// Following the book, we use a linked list of blobs, where each blob has a pointer to the next object,
-/// A type tag, and some data that depends on its Lox type.
-/// Internally, Heap is *very much unsafe*. We use std::alloc::alloc to allocate memory for heap objects,
-/// Then cast parts of those objects to and from Rust types to use them.
-/// I spent some time trying to work with boxes and dynamically sized types instead of raw pointers,
-/// but could not make it work. OTOH, std::alloc::Layout lets us write and read data in specific layouts as we want.
-///
-/// TODO The current API is not great, since the HeapNodes are not tied to the Heap they were allocated on
-/// and therefore could be dangling if the heap is dropped.
-/// Perhaps returning shared HeapNodes as shared refs with a lifetime tied to the heap and using explicit
-/// interior mutability would be better.
-/// If I'm going to keep this API, probably allocating a node should be unsafe, but it'd be better if it weren't.
-mod heap {
-
-    use std::alloc::Layout;
-
-    /// A type for allocating, tracking, and eventually GCing heap-allocated Lox object
-    #[derive(Debug)]
-    pub struct Heap {
-        head: Option<HeapNode>,
-    }
-
-    // HeapNode upholds the following invariant:
-    // - Its pointer points at a non-null pointer
-    // - The pointer is valid as long as the heap it was allocated with hasn't been dropped.
-    // - A valid ObjectHeader can be read from it (i.e. it was allocated with a layout
-    //   beginning with the layout for ObjectHeader, and a valid ObjectHeader has been written there
-    // - If the header's Type is ObjectType::String, the entire layout is layout_for_string(), and
-    //   a valid String can be read from the string offset.
-    // Automatically !Sync and !Send, which is what we want: thread-safety is out of scope for me.
-    #[derive(Debug)]
-    pub struct HeapNode(*mut u8);
-
-    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-    pub enum ObjectType {
-        String,
-    }
-
-    struct ObjectHeader {
-        next: Option<HeapNode>,
-        typ: ObjectType,
-    }
-
-    impl Default for Heap {
-        fn default() -> Self {
-            Self::new()
-        }
-    }
-
-    impl Heap {
-        /// A new, empty heap.
-        pub fn new() -> Heap {
-            Heap { head: None }
-        }
-
-        /// Add an empty string to the heap, and return the node by which it can be accessed
-        pub fn push_string_node(&mut self) -> HeapNode {
-            let (layout, string_offset) = layout_for_string();
-            // SAFETY
-            // alloc is safe as long as layout is not zero-sized, which it is not.
-            let ptr = unsafe { std::alloc::alloc(layout) };
-            let header_ptr: *mut ObjectHeader = ptr.cast();
-            let header = ObjectHeader {
-                next: self.head.take(),
-                typ: ObjectType::String,
-            };
-            // SAFETY
-            // write is safe as long has the pointer we are writing to is valid and aligned
-            // which it is, as it was just constructed above with a layout that begins with
-            // the layout for ObjectHeader.
-            // And since we are writing a valid ObjectHeader, it's safe to read an ObjectHeader
-            // from this ptr in the future.
-            unsafe { header_ptr.write(header) };
-            self.head = Some(HeapNode(ptr));
-            // SAFETY
-            // Adding an offset from Layout::extend to a pointer allocated on that layout
-            // is safe.
-            let body_ptr: *mut String = unsafe { ptr.add(string_offset) }.cast();
-            // This string is getting dropped at the end of this func, which is breaking things
-            let s = String::new();
-            // SAFETY
-            // Similar as the above ptr.add and header_ptr.write.
-            unsafe { body_ptr.write(s) };
-            HeapNode(ptr)
-        }
-
-        // Pops and returns head of heap, with Next set to None.
-        // Helper function for cleaning up the heap
-        // We could drop using a normal iteration over the linked list, but it's awkward
-        // because we need hold the ref to the next node, THEN dealloc the current node
-        // We can do this more safely.
-        fn pop(&mut self) -> Option<HeapNode> {
-            match &mut self.head {
-                None => None,
-                Some(node) => {
-                    let second_ptr = node.header_mut().next.as_ref().map(|x| HeapNode(x.0));
-                    let mut ret = self.head.take();
-                    self.head = second_ptr;
-                    if let Some(hdr) = ret.as_mut().map(|x| x.header_mut()) {
-                        hdr.next = None;
-                    }
-                    ret
-                }
-            }
-        }
-
-        #[allow(dead_code)]
-        fn dump(&self) {
-            let mut next = &self.head;
-            while let Some(node) = next {
-                let hdr = node.header();
-                match hdr.typ {
-                    ObjectType::String => {
-                        let s = node.as_string().unwrap();
-                        println!("{}", s);
-                    }
-                }
-                next = &node.header().next;
-            }
-        }
-    }
-
-    impl Drop for Heap {
-        fn drop(&mut self) {
-            while let Some(node) = self.pop() {
-                let hdr = node.header();
-                let layout: Layout;
-                match hdr.typ {
-                    ObjectType::String => {
-                        let (l, offset) = layout_for_string();
-                        layout = l;
-                        // Make sure the String's destructor runs.
-                        // SAFETY
-                        // HeapNodes uphold the invariant that if the tag is ObjectType::String,
-                        // then the layout is layout_for_string() and a valid string lives
-                        // at the string offset.
-                        let string_ptr: *mut String = unsafe { node.0.add(offset) }.cast();
-                        let _: String = unsafe { string_ptr.read() };
-                    }
-                }
-                unsafe { std::alloc::dealloc(node.0, layout) };
-            }
-        }
-    }
-
-    fn layout_for_string() -> (Layout, usize) {
-        let layout = Layout::new::<ObjectHeader>();
-        let (layout, string_offset) = layout.extend(Layout::new::<String>()).unwrap();
-        let layout = layout.pad_to_align();
-        (layout, string_offset)
-    }
-
-    impl HeapNode {
-        fn header(&self) -> &ObjectHeader {
-            let header_ptr: *const ObjectHeader = self.0.cast();
-            unsafe { header_ptr.as_ref().unwrap() }
-        }
-
-        fn header_mut(&mut self) -> &mut ObjectHeader {
-            let header_ptr: *mut ObjectHeader = self.0.cast();
-            unsafe { header_ptr.as_mut().unwrap() }
-        }
-
-        pub fn typ(&self) -> ObjectType {
-            self.header().typ
-        }
-
-        pub fn as_string(&self) -> Option<&String> {
-            if self.typ() != ObjectType::String {
-                return None;
-            }
-            let (_, offset) = layout_for_string();
-            let string_ptr: *mut String = unsafe { self.0.add(offset) }.cast();
-            unsafe { string_ptr.as_ref() }
-        }
-
-        // This could be a safety issue due to mutable aliasing rules
-        // Since HeapNode isn't Copy or Clone, outside of this module should have access to
-        // the string refs following normal rules
-        // but we have our own refs inside this module, which we need to be careful of when doing GC.
-        pub fn as_string_mut(&mut self) -> Option<&mut String> {
-            if self.typ() != ObjectType::String {
-                return None;
-            }
-            let (_, offset) = layout_for_string();
-            let string_ptr: *mut String = unsafe { self.0.add(offset) }.cast();
-            unsafe { string_ptr.as_mut() }
-        }
-
-        /// If a HeapNode is cloned, it becomes possible to violate aliasing rules, by turning both the
-        /// original and the clone into mutable refs. Thus, clone is unsafe.
-        pub unsafe fn clone(&self) -> HeapNode {
-            HeapNode(self.0)
-        }
-    }
-
-    #[cfg(test)]
-    mod test {
-        use super::*;
-        #[test]
-        fn test_heap() {
-            let mut heap = Heap::new();
-            let mut node = heap.push_string_node();
-            let value = node.as_string_mut().unwrap();
-            value.push_str("Goodbye, world");
-
-            let mut node = heap.push_string_node();
-            let value = node.as_string_mut().unwrap();
-            value.push_str("Hello, world");
-
-            heap.dump();
-        }
     }
 }
 
@@ -611,11 +392,7 @@ impl Vm {
             }
             Instruction::Constant(idx) => {
                 let value = match self.chunk.get_constant(*idx) {
-                    // SAFETY TODO
-                    // Right now this us just plain unsound, since if there are multiple
-                    // loads of the same object constant, we will violate the safety invariant of
-                    // HeapNode::clone
-                    Value::Object(o) => Value::Object(unsafe { o.clone() }),
+                    Value::Object(o) => Value::Object(o.clone()),
                     Value::Number(x) => Value::Number(*x),
                     Value::Boolean(x) => Value::Boolean(*x),
                     Value::Nil => Value::Nil,
@@ -664,5 +441,134 @@ impl Vm {
         self.stack
             .pop()
             .ok_or_else(|| InternalError::TooManyConstants.into())
+    }
+}
+
+mod heap {
+    use std::any::Any;
+    use std::cell::RefCell;
+    use std::rc::{Rc, Weak};
+
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    pub enum ObjectType {
+        String,
+    }
+
+    #[derive(Debug)]
+    pub struct Object {
+        typ: ObjectType,
+        value: Box<dyn Any>,
+    }
+
+    #[derive(Debug)]
+    struct HeapNode {
+        next: Option<Box<HeapNode>>,
+        object: Rc<RefCell<Object>>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct HeapRef {
+        value: Weak<RefCell<Object>>,
+    }
+
+    #[derive(Debug)]
+    /// A type for allocating, tracking, and eventually GCing heap-allocated Lox object
+    pub struct Heap {
+        head: Option<Box<HeapNode>>,
+    }
+
+    impl Heap {
+        /// A new, empty heap.
+        pub fn new() -> Heap {
+            Heap { head: None }
+        }
+
+        /// Add an empty string to the heap, and return the node by which it can be accessed
+        pub fn new_string(&mut self) -> HeapRef {
+            let obj_in_rc = Rc::new(RefCell::new(Object {
+                typ: ObjectType::String,
+                value: Box::new(String::new()),
+            }));
+            let obj = HeapNode {
+                object: obj_in_rc.clone(),
+                next: self.head.take(),
+            };
+            self.head = Some(Box::new(obj));
+            HeapRef {
+                value: std::rc::Rc::downgrade(&obj_in_rc),
+            }
+        }
+
+        /// Convert a HeapRef into the actual Object it referes to (behind shared ownership)
+        pub fn ref_as_obj(&self, node: &HeapRef) -> Rc<RefCell<Object>> {
+            node.value.upgrade().unwrap()
+        }
+
+        #[allow(dead_code)]
+        fn dump(&self) {
+            let mut next = &self.head;
+            while let Some(node) = next {
+                match node.object.borrow().typ {
+                    ObjectType::String => {
+                        println!("{}", node.object.borrow().as_string().unwrap());
+                    }
+                }
+                next = &node.next
+            }
+        }
+    }
+
+    impl Default for Heap {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Object {
+        pub fn typ(&self) -> ObjectType {
+            self.typ
+        }
+
+        pub fn as_string(&self) -> Option<&String> {
+            self.value.downcast_ref()
+        }
+
+        pub fn as_string_mut(&mut self) -> Option<&mut String> {
+            self.value.downcast_mut()
+        }
+    }
+
+    impl HeapRef {
+        pub fn typ(&self) -> ObjectType {
+            self.value.upgrade().unwrap().borrow().typ
+        }
+
+        pub fn as_obj(&self) -> Rc<RefCell<Object>> {
+            self.value.upgrade().unwrap()
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::*;
+        #[test]
+        fn test_heap() {
+            let mut heap = Heap::new();
+            let node = heap.new_string();
+            node.as_obj()
+                .borrow_mut()
+                .as_string_mut()
+                .unwrap()
+                .push_str("Goodbye, world");
+
+            let node = heap.new_string();
+            node.as_obj()
+                .borrow_mut()
+                .as_string_mut()
+                .unwrap()
+                .push_str("Hello, world");
+
+            heap.dump();
+        }
     }
 }

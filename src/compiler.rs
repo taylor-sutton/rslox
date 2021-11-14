@@ -163,9 +163,12 @@ where
                 self.advance();
             }
             TokenType::String => {
-                let mut node = self.heap.push_string_node();
-                let s = node.as_string_mut().unwrap();
-                s.push_str(&self.current_token.raw);
+                let node = self.heap.new_string();
+                node.as_obj()
+                    .borrow_mut()
+                    .as_string_mut()
+                    .unwrap()
+                    .push_str(&self.current_token.raw);
                 let idx = self
                     .chunk
                     .add_constant(Value::Object(node))
