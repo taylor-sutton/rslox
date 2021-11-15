@@ -1,10 +1,11 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
 
 #[derive(Debug)]
 pub enum Object {
-    String(String),
+    InternedString { length: usize, data: *const u8 },
 }
 
 // Internal representation of a heap object. The objects are arranged in a linked list using the `next` field, and the objects
@@ -39,41 +40,34 @@ pub struct HeapRef {
 /// A type for allocating, tracking, and eventually GCing heap-allocated Lox object
 pub struct Heap {
     head: Option<Box<HeapNode>>,
+    string_table: HashSet<String>,
 }
 
 impl Heap {
     /// A new, empty heap.
     pub fn new() -> Heap {
-        Heap { head: None }
-    }
-
-    /// Add an empty string to the heap, and return the node by which it can be accessed.
-    /// If you want to give the string a value ,us `new_string_with_value`, but this method
-    /// doesn't do the String's heap allocation (as it uses `String::new()`).
-    // I tried for a while to return a value that has a lifetime tied to lifetime of the heap,
-    // but couldn't make it work :(.
-    pub fn new_string(&mut self) -> HeapRef {
-        let obj_in_rc = Rc::new(RefCell::new(Object::String(String::new())));
-        let obj = HeapNode {
-            object: obj_in_rc.clone(),
-            next: self.head.take(),
-        };
-        self.head = Some(Box::new(obj));
-        HeapRef {
-            value: std::rc::Rc::downgrade(&obj_in_rc),
+        Heap {
+            head: None,
+            string_table: HashSet::new(),
         }
     }
 
-    /// Add an non-empty string to the heap, copying from value, and return the node by which it can be accessed.
-    pub fn new_string_with_value(&mut self, value: &str) -> HeapRef {
-        let obj_in_rc = Rc::new(RefCell::new(Object::String(String::from(value))));
+    /// New string with value, taking ownership and interning it.
+    pub fn new_string(&mut self, value: String) -> HeapRef {
+        // Ideally we have the unstable method HashSet::get_or_insert, but alas
+        self.string_table.insert(value.clone());
+        let string_ref = self.string_table.get(&value).unwrap();
+        let o = Rc::new(RefCell::new(Object::InternedString {
+            data: string_ref.as_ptr(),
+            length: string_ref.len(),
+        }));
         let obj = HeapNode {
-            object: obj_in_rc.clone(),
+            object: o.clone(),
             next: self.head.take(),
         };
         self.head = Some(Box::new(obj));
         HeapRef {
-            value: std::rc::Rc::downgrade(&obj_in_rc),
+            value: std::rc::Rc::downgrade(&o),
         }
     }
 
@@ -83,7 +77,11 @@ impl Heap {
         let mut next = &self.head;
         while let Some(node) = next {
             match &*node.object.borrow() {
-                Object::String(s) => {
+                Object::InternedString { length, data } => {
+                    let s: &str = unsafe {
+                        let data: &[u8] = std::slice::from_raw_parts(*data, *length);
+                        std::str::from_utf8_unchecked(data)
+                    };
                     println!("{}", s);
                 }
             }
@@ -103,14 +101,16 @@ impl Object {
         true
     }
 
-    pub fn as_string(&self) -> Option<&String> {
-        let Object::String(s) = self;
-        Some(s)
-    }
-
-    pub fn as_string_mut(&mut self) -> Option<&mut String> {
-        let Object::String(s) = self;
-        Some(s)
+    fn as_string(&self) -> Option<&str> {
+        match self {
+            Object::InternedString { data, length } => {
+                let s: &str = unsafe {
+                    let data: &[u8] = std::slice::from_raw_parts(*data, *length);
+                    std::str::from_utf8_unchecked(data)
+                };
+                Some(s)
+            }
+        }
     }
 }
 
@@ -124,17 +124,9 @@ impl HeapRef {
     // And none if it isn't a string
     pub fn map_as_string<F, Ret>(&self, f: F) -> Option<Ret>
     where
-        F: FnOnce(&String) -> Ret,
+        F: FnOnce(&str) -> Ret,
     {
         Some(f(self.as_obj().borrow().as_string()?))
-    }
-
-    // Same as map_as_string but with mutability.
-    pub fn map_as_string_mut<F, Ret>(&self, f: F) -> Option<Ret>
-    where
-        F: FnOnce(&mut String) -> Ret,
-    {
-        Some(f(self.as_obj().borrow_mut().as_string_mut()?))
     }
 }
 
@@ -144,14 +136,11 @@ mod test {
     #[test]
     fn test_heap() {
         let mut heap = Heap::new();
-        let node = heap.new_string();
-        node.as_obj()
-            .borrow_mut()
-            .as_string_mut()
-            .unwrap()
-            .push_str("Goodbye, world");
+        let n1 = heap.new_string("Goodbye, world".into());
+        let n2 = heap.new_string("Hello, world".into());
 
-        heap.new_string_with_value("Hello, world");
+        n1.map_as_string(|s| assert_eq!(s, "Goodbye, world"));
+        n2.map_as_string(|s| assert_eq!(s, "Hello, world"));
 
         heap.dump();
     }

@@ -164,7 +164,7 @@ where
             }
             TokenType::String => {
                 let without_quotes = &self.current_token.raw[1..self.current_token.raw.len() - 1];
-                let node = self.heap.new_string_with_value(without_quotes);
+                let node = self.heap.new_string(without_quotes.into());
                 let idx = self
                     .chunk
                     .add_constant(Value::Object(node))

@@ -241,7 +241,14 @@ impl PartialEq for Value {
             (Self::Nil, Self::Nil) => true,
             (Self::Object(l0), Self::Object(r0)) => {
                 match (&*l0.as_obj().borrow(), &*r0.as_obj().borrow()) {
-                    (Object::String(s1), Object::String(s2)) => s1 == s2,
+                    (
+                        Object::InternedString {
+                            data: data_left, ..
+                        },
+                        Object::InternedString {
+                            data: data_right, ..
+                        },
+                    ) => data_left == data_right,
                 }
             }
             _ => false,
@@ -256,7 +263,13 @@ impl Display for Value {
             Self::Boolean(b) => write!(f, "{}", b),
             Self::Nil => write!(f, "<nil>"),
             Self::Object(o) => match &*o.as_obj().borrow() {
-                Object::String(s) => write!(f, r#""{}""#, s),
+                Object::InternedString { length, data } => {
+                    let s: &str = unsafe {
+                        let data: &[u8] = std::slice::from_raw_parts(*data, *length);
+                        std::str::from_utf8_unchecked(data)
+                    };
+                    write!(f, r#""{}""#, s)
+                }
             },
         }
     }
@@ -416,11 +429,11 @@ impl Vm {
                     (Value::Number(a), Value::Number(b)) => self.stack_push(Value::Number(a + b)),
                     (Value::Object(a), Value::Object(b)) => {
                         let mut s: String = a
-                            .map_as_string(|x| x.clone())
+                            .map_as_string(|x| x.to_string())
                             .ok_or(LoxError::RuntimeError)?;
                         b.map_as_string(|bs| s.push_str(bs))
                             .ok_or(LoxError::RuntimeError)?;
-                        let new_value = Value::Object(self.heap.new_string_with_value(&s));
+                        let new_value = Value::Object(self.heap.new_string(s));
                         self.stack_push(new_value)
                     }
                     _ => Err(LoxError::RuntimeError),
