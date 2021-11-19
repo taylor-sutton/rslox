@@ -241,14 +241,7 @@ impl PartialEq for Value {
             (Self::Nil, Self::Nil) => true,
             (Self::Object(l0), Self::Object(r0)) => {
                 match (&*l0.as_obj().borrow(), &*r0.as_obj().borrow()) {
-                    (
-                        Object::InternedString {
-                            data: data_left, ..
-                        },
-                        Object::InternedString {
-                            data: data_right, ..
-                        },
-                    ) => data_left == data_right,
+                    (Object::InternedString(i1), Object::InternedString(i2)) => i1 == i2,
                 }
             }
             _ => false,
@@ -263,12 +256,8 @@ impl Display for Value {
             Self::Boolean(b) => write!(f, "{}", b),
             Self::Nil => write!(f, "<nil>"),
             Self::Object(o) => match &*o.as_obj().borrow() {
-                Object::InternedString { length, data } => {
-                    let s: &str = unsafe {
-                        let data: &[u8] = std::slice::from_raw_parts(*data, *length);
-                        std::str::from_utf8_unchecked(data)
-                    };
-                    write!(f, r#""{}""#, s)
+                Object::InternedString(i) => {
+                    write!(f, r#""{}""#, i.as_str())
                 }
             },
         }

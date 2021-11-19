@@ -4,8 +4,40 @@ use std::ops::{Deref, DerefMut};
 use std::rc::{Rc, Weak};
 
 #[derive(Debug)]
+pub struct InternedString {
+    length: usize,
+    data: *const u8,
+}
+
+impl InternedString {
+    pub fn as_str(&self) -> &str {
+        // SAFETY
+        // The only way to get an InternedString outside this module is as a the object inside
+        // SharedObject<Rc<RefCell<Object>>
+        // and that can only be gotten if the object is still alive.
+        // We promise that if the GC has kept an object alive, it has also kept
+        // alive any strings the object uses.
+        // So long as the GC upholds that, the from_row_parts is safe.
+        // The from_utf8_unchecked is safe because the length and data came from a String
+        // and there's no way to modify it once it's been converted to InternedString.
+        unsafe {
+            let data: &[u8] = std::slice::from_raw_parts(self.data, self.length);
+            std::str::from_utf8_unchecked(data)
+        }
+    }
+}
+
+/// This impl, really, is the whole point of InternedString:
+/// We can check for equality in O(1) by just comparing our pointers.
+impl PartialEq for InternedString {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data
+    }
+}
+
+#[derive(Debug)]
 pub enum Object {
-    InternedString { length: usize, data: *const u8 },
+    InternedString(InternedString),
 }
 
 // Internal representation of a heap object. The objects are arranged in a linked list using the `next` field, and the objects
@@ -54,13 +86,13 @@ impl Heap {
 
     /// New string with value, taking ownership and interning it.
     pub fn new_string(&mut self, value: String) -> HeapRef {
-        // Ideally we have the unstable method HashSet::get_or_insert, but alas
+        // Ideally we have the unstable method HashSet::get_or_insert, but alas, that is unstable
         self.string_table.insert(value.clone());
         let string_ref = self.string_table.get(&value).unwrap();
-        let o = Rc::new(RefCell::new(Object::InternedString {
+        let o = Rc::new(RefCell::new(Object::InternedString(InternedString {
             data: string_ref.as_ptr(),
             length: string_ref.len(),
-        }));
+        })));
         let obj = HeapNode {
             object: o.clone(),
             next: self.head.take(),
@@ -77,12 +109,8 @@ impl Heap {
         let mut next = &self.head;
         while let Some(node) = next {
             match &*node.object.borrow() {
-                Object::InternedString { length, data } => {
-                    let s: &str = unsafe {
-                        let data: &[u8] = std::slice::from_raw_parts(*data, *length);
-                        std::str::from_utf8_unchecked(data)
-                    };
-                    println!("{}", s);
+                Object::InternedString(i) => {
+                    println!("{}", i.as_str());
                 }
             }
             next = &node.next
@@ -103,13 +131,7 @@ impl Object {
 
     fn as_string(&self) -> Option<&str> {
         match self {
-            Object::InternedString { data, length } => {
-                let s: &str = unsafe {
-                    let data: &[u8] = std::slice::from_raw_parts(*data, *length);
-                    std::str::from_utf8_unchecked(data)
-                };
-                Some(s)
-            }
+            Object::InternedString(i) => Some(i.as_str()),
         }
     }
 }
