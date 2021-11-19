@@ -6,6 +6,10 @@ use std::rc::{Rc, Weak};
 #[derive(Debug)]
 pub struct InternedString {
     length: usize,
+    // Another option might be Rc<str> or Rc<[u8]> - Rc implements some useful From impls
+    // (e.g. impl From<String> for Rc<str> and impl From &[T] for Rc<[T]>)
+    // That would let us avoid unsafe. But let's rolll with the unsafe to avoid the overhead
+    // of ref counting, plus as a learning experience.
     data: *const u8,
 }
 
@@ -19,7 +23,7 @@ impl InternedString {
         // alive any strings the object uses.
         // So long as the GC upholds that, the from_row_parts is safe.
         // The from_utf8_unchecked is safe because the length and data came from a String
-        // and there's no way to modify it once it's been converted to InternedString.
+        // and there's it isn't modified it once it's been converted to InternedString.
         unsafe {
             let data: &[u8] = std::slice::from_raw_parts(self.data, self.length);
             std::str::from_utf8_unchecked(data)
