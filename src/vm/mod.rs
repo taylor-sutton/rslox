@@ -52,6 +52,10 @@ pub enum Instruction {
     Greater,
     /// If stack is TOP: b, a, ..., push the bool a<b
     Less,
+    /// Pop and print the top value on the stack
+    Print,
+    /// Pop the stack and do nothing with it.
+    Pop,
 }
 
 impl Instruction {
@@ -69,6 +73,8 @@ impl Instruction {
     const OP_CODE_EQUAL: u8 = 11;
     const OP_CODE_GREATER: u8 = 12;
     const OP_CODE_LESS: u8 = 13;
+    const OP_CODE_PRINT: u8 = 14;
+    const OP_CODE_POP: u8 = 15;
 
     /// Try to parse an instruction from the beginning of some bytes, returning the number of bytes that the instruction consists of
     /// on success in addition.
@@ -104,6 +110,8 @@ impl Instruction {
             Self::Equal => writer.write(&[Instruction::OP_CODE_EQUAL]),
             Self::Less => writer.write(&[Instruction::OP_CODE_LESS]),
             Self::Greater => writer.write(&[Instruction::OP_CODE_GREATER]),
+            Self::Print => writer.write(&[Instruction::OP_CODE_PRINT]),
+            Self::Pop => writer.write(&[Instruction::OP_CODE_POP]),
         }
     }
 
@@ -141,6 +149,8 @@ impl Display for Instruction {
             Instruction::Equal => write!(f, "OP_EQUAL"),
             Instruction::Greater => write!(f, "OP_GREATER"),
             Instruction::Less => write!(f, "OP_LESS"),
+            Instruction::Print => write!(f, "OP_PRINT"),
+            Instruction::Pop => write!(f, "OP_POP"),
         }
     }
 }
@@ -438,6 +448,12 @@ impl Vm {
             }
             Instruction::Greater => binary_arithmetic!(self, >),
             Instruction::Less => binary_arithmetic!(self, <),
+            Instruction::Print => {
+                let a = self.stack_pop()?;
+                println!("{}", a);
+                Ok(())
+            }
+            Instruction::Pop => self.stack_pop().map(|_| ()),
         }
     }
 
@@ -453,7 +469,7 @@ impl Vm {
     fn stack_pop(&mut self) -> Result<Value, LoxError> {
         self.stack
             .pop()
-            .ok_or_else(|| InternalError::TooManyConstants.into())
+            .ok_or_else(|| InternalError::EmptyStack.into())
     }
 }
 

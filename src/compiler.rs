@@ -110,13 +110,46 @@ where
     // Our parser is stateful; if you call compile on it, it returns whether the operation succeeded or failed.
     // If it succeeded, the Chunk is available in self.Chunk, otherwise, that chunk may be nonsense bytecode.
     fn compile(&mut self) -> bool {
-        self.expression();
-        if self.current_token.typ != TokenType::Eof {
-            self.error("Expect EOF at end of expression.");
+        while self.current_token.typ != TokenType::Eof {
+            self.declaration();
         }
 
-        self.end_compile();
         self.had_error
+    }
+
+    fn declaration(&mut self) {
+        self.statement()
+    }
+
+    fn statement(&mut self) {
+        if self.match_token(TokenType::Print) {
+            self.print_statement();
+        } else {
+            self.expression_statement();
+        }
+    }
+
+    fn print_statement(&mut self) {
+        let line = self.current_token.line;
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after value.");
+        self.write_instruction(Instruction::Print, line)
+    }
+
+    fn expression_statement(&mut self) {
+        let line = self.current_token.line;
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after expression.");
+        self.write_instruction(Instruction::Pop, line);
+    }
+
+    fn match_token(&mut self, typ: TokenType) -> bool {
+        if self.current_token.typ == typ {
+            self.advance();
+            true
+        } else {
+            false
+        }
     }
 
     // advance is more than just calling next on the token source - it also skips over error tokens.
@@ -254,10 +287,6 @@ where
     // Convenience wrapper to write an instruction to the chunk with the current line.
     fn write_instruction(&mut self, instruction: Instruction, line: usize) {
         self.chunk.write_instruction(instruction, line)
-    }
-
-    fn end_compile(&mut self) {
-        self.write_instruction(Instruction::Return, self.current_token.line);
     }
 
     fn error(&mut self, message: &str) {
