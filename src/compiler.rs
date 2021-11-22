@@ -118,8 +118,15 @@ where
     }
 
     fn declaration(&mut self) {
-        self.statement();
-        self.synchronize()
+        let var_line = self.current_token.line;
+        if self.match_token(TokenType::Var) {
+            self.var_declaration(var_line);
+        } else {
+            self.statement();
+        }
+        if self.in_panic_mode {
+            self.synchronize()
+        }
     }
 
     fn synchronize(&mut self) {
@@ -145,6 +152,33 @@ where
         } {
             self.advance()
         }
+    }
+
+    // Assumes current token is an identifer
+    fn identifier_constant_at_point(&mut self) -> u8 {
+        let heap_ref = self.heap.new_string(self.current_token.raw.to_string());
+        self.advance();
+        self.chunk
+            .add_constant(Value::Object(heap_ref))
+            .expect("TODO too many constants panic")
+    }
+
+    fn var_declaration(&mut self, var_line: usize) {
+        if self.current_token.typ != TokenType::Identifier {
+            self.error("Expecting identifier as variable name.");
+            return;
+        }
+        let idx = self.identifier_constant_at_point();
+        if self.match_token(TokenType::Equal) {
+            self.expression();
+        } else {
+            self.write_instruction(Instruction::Nil, self.current_token.line)
+        }
+        self.consume(
+            TokenType::Semicolon,
+            "Expect ';' after variable declaration.",
+        );
+        self.write_instruction(Instruction::DefineGlobal(idx), var_line);
     }
 
     fn statement(&mut self) {
@@ -260,7 +294,10 @@ where
                 self.expression_with_min_prec(Precedence::Unary);
                 self.write_instruction(Instruction::Not, current_line);
             }
-
+            TokenType::Identifier => {
+                let idx = self.identifier_constant_at_point();
+                self.write_instruction(Instruction::GetGlobal(idx), current_line);
+            }
             _ => {
                 self.error("Got unexpected token at beginning of expression.");
                 return;

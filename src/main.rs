@@ -31,6 +31,7 @@ fn repl() {
             println!();
             break;
         }
+        // TODO Interpret creates a fresh VM on every line, which is not very useful.
         interpret(&buf).unwrap_or_else(|e| println!("Interpret error: {:?}", e));
         io::stdout().flush().unwrap();
     }

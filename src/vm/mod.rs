@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::{Display, Write};
 
@@ -56,6 +57,10 @@ pub enum Instruction {
     Print,
     /// Pop the stack and do nothing with it.
     Pop,
+    /// Define a global whose value is popped from the stack, and whose name is the constant identified by the u8.
+    DefineGlobal(u8),
+    /// Push onto the stack the global whose name is the constant with the given index
+    GetGlobal(u8),
 }
 
 impl Instruction {
@@ -75,19 +80,8 @@ impl Instruction {
     const OP_CODE_LESS: u8 = 13;
     const OP_CODE_PRINT: u8 = 14;
     const OP_CODE_POP: u8 = 15;
-
-    /// Try to parse an instruction from the beginning of some bytes, returning the number of bytes that the instruction consists of
-    /// on success in addition.
-    pub fn from_bytes(bytes: &[u8]) -> Option<(Instruction, usize)> {
-        if bytes.is_empty() {
-            return None;
-        }
-        match bytes[0] {
-            Instruction::OP_CODE_RETURN => Some((Instruction::Return, 1)),
-            Instruction::OP_CODE_CONSTANT => Some((Instruction::Constant(bytes[1]), 2)), // TODO can panic if OOB
-            _ => todo!(),
-        }
-    }
+    const OP_CODE_DEFINE_GLOBAL: u8 = 16;
+    const OP_CODE_GET_GLOBAL: u8 = 17;
 
     /// write_to is a way to get an instruction as bytes in a way that, in some cases, can avoid the extra allocation
     /// that would result from the Into<Vec<u8>> impl
@@ -112,6 +106,8 @@ impl Instruction {
             Self::Greater => writer.write(&[Instruction::OP_CODE_GREATER]),
             Self::Print => writer.write(&[Instruction::OP_CODE_PRINT]),
             Self::Pop => writer.write(&[Instruction::OP_CODE_POP]),
+            Self::DefineGlobal(u) => writer.write(&[Instruction::OP_CODE_DEFINE_GLOBAL, *u]),
+            Self::GetGlobal(u) => writer.write(&[Instruction::OP_CODE_GET_GLOBAL, *u]),
         }
     }
 
@@ -151,6 +147,8 @@ impl Display for Instruction {
             Instruction::Less => write!(f, "OP_LESS"),
             Instruction::Print => write!(f, "OP_PRINT"),
             Instruction::Pop => write!(f, "OP_POP"),
+            Instruction::DefineGlobal(u) => write!(f, "OP_DEFINE_GLOBAL {:4}", u),
+            Instruction::GetGlobal(u) => write!(f, "OP_GET_GLOBAL {:4}", u),
         }
     }
 }
@@ -229,7 +227,7 @@ impl Default for Chunk {
 }
 
 /// VM-internal representation of Lox value.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value {
     /// Lox has a single 'number' base type, backed by f64.
     /// Even though pos/neg infinity and NaN are allowed, we make no guarantees about how they work.
@@ -324,6 +322,7 @@ pub struct Vm {
     //   indices on the stack, same as the book.
     // - Use a Vec; now accessing the stack requires goes out-of-line with the VM, but it's simpler
     stack: Vec<Value>,
+    globals: HashMap<String, Value>,
     heap: Heap,
 }
 
@@ -368,6 +367,7 @@ impl Vm {
             ip: 0,
             stack: Vec::with_capacity(STACK_SIZE),
             heap,
+            globals: HashMap::new(),
         }
     }
 
@@ -454,6 +454,36 @@ impl Vm {
                 Ok(())
             }
             Instruction::Pop => self.stack_pop().map(|_| ()),
+            Instruction::DefineGlobal(u) => match self.chunk.get_constant(*u) {
+                Value::Object(o) => {
+                    let value = self.stack_peek()?.clone();
+                    if let Some(r) = o.map_as_string(|s| {
+                        self.globals.insert(s.to_owned(), value);
+                    }) {
+                        self.stack_pop().map(|_| ())?;
+                        Ok(r)
+                    } else {
+                        // The constant was an object, but not a string
+                        Err(LoxError::RuntimeError)
+                    }
+                }
+                // The constant wasn't an object
+                _ => Err(LoxError::RuntimeError),
+            },
+            Instruction::GetGlobal(u) => match self.chunk.get_constant(*u) {
+                Value::Object(o) => {
+                    if let Some(value) = o.map_as_string(|s| self.globals.get(s).cloned()).flatten()
+                    {
+                        self.stack_push(value)
+                    } else {
+                        // The constant was an object, but not a string.
+                        // Or the global with that name didn't exist.
+                        Err(LoxError::RuntimeError)
+                    }
+                }
+                // The constant wasn't an object
+                _ => Err(LoxError::RuntimeError),
+            },
         }
     }
 
@@ -469,6 +499,12 @@ impl Vm {
     fn stack_pop(&mut self) -> Result<Value, LoxError> {
         self.stack
             .pop()
+            .ok_or_else(|| InternalError::EmptyStack.into())
+    }
+
+    fn stack_peek(&self) -> Result<&Value, LoxError> {
+        self.stack
+            .last()
             .ok_or_else(|| InternalError::EmptyStack.into())
     }
 }
