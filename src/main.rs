@@ -10,7 +10,7 @@ fn main() {
 
     if args.len() == 1 {
         repl()
-    } else if args.len() == 1 {
+    } else if args.len() == 2 {
         run_file(&args[1])
     } else {
         eprintln!("Usage: rslox [file]");

@@ -118,7 +118,33 @@ where
     }
 
     fn declaration(&mut self) {
-        self.statement()
+        self.statement();
+        self.synchronize()
+    }
+
+    fn synchronize(&mut self) {
+        self.in_panic_mode = false;
+        // If we see semicolon, go one more then stop
+        // If we see the start of a statement, or EOF, stop
+        // otherwise, advance.
+        while match self.current_token.typ {
+            TokenType::Semicolon => {
+                self.advance();
+                false
+            }
+            TokenType::Class
+            | TokenType::For
+            | TokenType::Fun
+            | TokenType::If
+            | TokenType::Print
+            | TokenType::Return
+            | TokenType::Var
+            | TokenType::While
+            | TokenType::Eof => false,
+            _ => true,
+        } {
+            self.advance()
+        }
     }
 
     fn statement(&mut self) {
