@@ -282,7 +282,10 @@ impl Value {
         if let Value::Number(f) = self {
             Ok(*f)
         } else {
-            Err(LoxError::RuntimeError)
+            Err(LoxError::RuntimeError(format!(
+                "cannot turn '{:?}' into float",
+                self
+            )))
         }
     }
 
@@ -354,8 +357,8 @@ pub enum LoxError {
     #[error("syntax error")]
     SyntaxError,
     /// RuntimeError happens with runtime problems, like mismatched types
-    #[error("runtime error")]
-    RuntimeError,
+    #[error("runtime error: {0}")]
+    RuntimeError(String),
     /// We have a hardcoded max stack size
     #[error("stack overflow")]
     StackOverflow,
@@ -373,6 +376,9 @@ pub enum InternalError {
     /// Tried to get the top value from an empty stack
     #[error("popped from an empty stack")]
     EmptyStack,
+    /// Tried to look up the constant corresponding to an identifier, but it wasn't a string
+    #[error("constant for identifier not a string")]
+    IdentifierTypeError,
 }
 
 impl Vm {
@@ -435,7 +441,7 @@ impl Vm {
                 if let Value::Number(number) = value {
                     self.stack_push(Value::Number(-number))
                 } else {
-                    Err(LoxError::RuntimeError)
+                    Err(LoxError::RuntimeError("Negating non-number value".into()))
                 }
             }
             Instruction::Not => {
@@ -448,15 +454,19 @@ impl Vm {
                 match (a, b) {
                     (Value::Number(a), Value::Number(b)) => self.stack_push(Value::Number(a + b)),
                     (Value::Object(a), Value::Object(b)) => {
-                        let mut s: String = a
-                            .map_as_string(|x| x.to_string())
-                            .ok_or(LoxError::RuntimeError)?;
-                        b.map_as_string(|bs| s.push_str(bs))
-                            .ok_or(LoxError::RuntimeError)?;
+                        let mut s: String =
+                            a.map_as_string(|x| x.to_string()).ok_or_else(|| {
+                                LoxError::RuntimeError("Adding non-string object".into())
+                            })?;
+                        b.map_as_string(|bs| s.push_str(bs)).ok_or_else(|| {
+                            LoxError::RuntimeError("Adding non-string objects".into())
+                        })?;
                         let new_value = Value::Object(self.heap.new_string(s));
                         self.stack_push(new_value)
                     }
-                    _ => Err(LoxError::RuntimeError),
+                    _ => Err(LoxError::RuntimeError(
+                        "Adding when not both string or both number.".into(),
+                    )),
                 }
             }
             Instruction::Subtract => binary_arithmetic!(self, -),
@@ -485,21 +495,26 @@ impl Vm {
                         Ok(r)
                     } else {
                         // The constant was an object, but not a string
-                        Err(LoxError::RuntimeError)
+                        Err(LoxError::RuntimeError("TODO".into()))
                     }
                 }
                 // The constant wasn't an object
-                _ => Err(LoxError::RuntimeError),
+                _ => Err(LoxError::RuntimeError("TODO".into())),
             },
             Instruction::GetGlobal(u) => self
                 .chunk
                 .get_constant(*u)
                 .as_heap_ref()
-                .ok_or(LoxError::RuntimeError) // wasn't an object
-                .and_then(|r: &HeapRef| {
-                    r.map_as_string(|s| self.globals.get(s).cloned())
-                        .flatten() // squash "wasn't a string" and "no global with that name" into one
-                        .ok_or(LoxError::RuntimeError)
+                .ok_or(LoxError::InternalError(InternalError::IdentifierTypeError))
+                .and_then(|r: &HeapRef| -> Result<Value, LoxError> {
+                    r.map_as_string(|s| -> Result<Value, LoxError> {
+                        self.globals.get(s).cloned().ok_or_else(|| {
+                            LoxError::RuntimeError(format!("Undefined global '{}'", s))
+                        })
+                    }) // Option<Result<Value, Err>>
+                    .unwrap_or(Err(LoxError::InternalError(
+                        InternalError::IdentifierTypeError,
+                    )))
                 })
                 .and_then(|v: Value| self.stack_push(v)),
             // Below is a more imperative version of the above functional version of GetGlobal
@@ -526,23 +541,25 @@ impl Vm {
                 .chunk
                 .get_constant(*u)
                 .as_object()
-                .ok_or(LoxError::RuntimeError) // constant wasn't an object
+                .ok_or(LoxError::InternalError(InternalError::IdentifierTypeError)) // constant wasn't an object
                 .and_then(|o| {
                     let name = o
                         .borrow()
                         .as_string()
-                        .ok_or(LoxError::RuntimeError)? // constant wasn't a string
+                        .ok_or(LoxError::InternalError(InternalError::IdentifierTypeError))? // constant wasn't a string
                         .to_string();
                     let value = self.stack_peek()?.clone();
-                    match self.globals.entry(name) {
-                        std::collections::hash_map::Entry::Occupied(mut o) => {
-                            o.insert(value);
-                            self.stack_pop().map(|_| ())
-                        }
-                        std::collections::hash_map::Entry::Vacant(_) => {
-                            Err(LoxError::RuntimeError) // Global wasn't already defined
-                        }
-                    }
+                    self.globals
+                        .get_mut(&name)
+                        .map(|value_ref: &mut Value| {
+                            *value_ref = value;
+                        })
+                        .ok_or_else(|| {
+                            LoxError::RuntimeError(format!(
+                                "Assign to undefined variable '{}'",
+                                name
+                            ))
+                        })
                 }),
         }
     }
