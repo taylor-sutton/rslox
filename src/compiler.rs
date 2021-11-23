@@ -1,9 +1,9 @@
 // The book's presentation of Pratt parsing confused me, so here are some notes I have.
-// In particular, the book's use of inplicit state stored in the Parser was confusing for me - I couldn't figure out
+// In particular, the book's use of implicit state stored in the Parser was confusing for me - I couldn't figure out
 // the invariant of which tokens were supposed to be in 'current' and 'previous' at different points during the parse.
 // I found https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
 // to be a very helpful guide to writing a Pratt parser ( happens to be in Rust, but may
-// be helpuful to anyone).
+// be helpful to anyone).
 // In particular, the matklad post illustrates that the parser does not need to be stateful
 // (there's no Parser struct in his post, just a parsing function) and that the only API the token source needs
 // for the core loop is just tokens.peek(): look at next token, and tokens.next(): move forward one token.

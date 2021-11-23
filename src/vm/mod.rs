@@ -61,6 +61,8 @@ pub enum Instruction {
     DefineGlobal(u8),
     /// Push onto the stack the global whose name is the constant with the given index
     GetGlobal(u8),
+    /// Pop and assign to the global whose name is the constant with the given index
+    SetGlobal(u8),
 }
 
 impl Instruction {
@@ -82,6 +84,7 @@ impl Instruction {
     const OP_CODE_POP: u8 = 15;
     const OP_CODE_DEFINE_GLOBAL: u8 = 16;
     const OP_CODE_GET_GLOBAL: u8 = 17;
+    const OP_CODE_SET_GLOBAL: u8 = 18;
 
     /// write_to is a way to get an instruction as bytes in a way that, in some cases, can avoid the extra allocation
     /// that would result from the Into<Vec<u8>> impl
@@ -108,6 +111,7 @@ impl Instruction {
             Self::Pop => writer.write(&[Instruction::OP_CODE_POP]),
             Self::DefineGlobal(u) => writer.write(&[Instruction::OP_CODE_DEFINE_GLOBAL, *u]),
             Self::GetGlobal(u) => writer.write(&[Instruction::OP_CODE_GET_GLOBAL, *u]),
+            Self::SetGlobal(u) => writer.write(&[Instruction::OP_CODE_SET_GLOBAL, *u]),
         }
     }
 
@@ -149,6 +153,7 @@ impl Display for Instruction {
             Instruction::Pop => write!(f, "OP_POP"),
             Instruction::DefineGlobal(u) => write!(f, "OP_DEFINE_GLOBAL {:4}", u),
             Instruction::GetGlobal(u) => write!(f, "OP_GET_GLOBAL {:4}", u),
+            Instruction::SetGlobal(u) => write!(f, "OP_SET_GLOBAL {:4}", u),
         }
     }
 }
@@ -286,6 +291,22 @@ impl Value {
             Value::Boolean(b) => *b,
             Value::Nil => true,
             _ => false,
+        }
+    }
+
+    fn as_object(&self) -> Option<SharedObject> {
+        if let Value::Object(o) = self {
+            Some(o.as_obj())
+        } else {
+            None
+        }
+    }
+
+    fn as_heap_ref(&self) -> Option<&HeapRef> {
+        if let Value::Object(o) = self {
+            Some(o)
+        } else {
+            None
         }
     }
 }
@@ -470,20 +491,59 @@ impl Vm {
                 // The constant wasn't an object
                 _ => Err(LoxError::RuntimeError),
             },
-            Instruction::GetGlobal(u) => match self.chunk.get_constant(*u) {
-                Value::Object(o) => {
-                    if let Some(value) = o.map_as_string(|s| self.globals.get(s).cloned()).flatten()
-                    {
-                        self.stack_push(value)
-                    } else {
-                        // The constant was an object, but not a string.
-                        // Or the global with that name didn't exist.
-                        Err(LoxError::RuntimeError)
+            Instruction::GetGlobal(u) => self
+                .chunk
+                .get_constant(*u)
+                .as_heap_ref()
+                .ok_or(LoxError::RuntimeError) // wasn't an object
+                .and_then(|r: &HeapRef| {
+                    r.map_as_string(|s| self.globals.get(s).cloned())
+                        .flatten() // squash "wasn't a string" and "no global with that name" into one
+                        .ok_or(LoxError::RuntimeError)
+                })
+                .and_then(|v: Value| self.stack_push(v)),
+            // Below is a more imperative version of the above functional version of GetGlobal
+            // Which is better? You decide.
+            // If there was a way to combine multiple if let into one (where the inner depends on the outer)
+            // I'd like that instead.
+            // Instruction::GetGlobal(u) => match self.chunk.get_constant(*u) {
+            //     Value::Object(o) => {
+            //         if let Some(value) = o.map_as_string(|s| self.globals.get(s).cloned()).flatten()
+            //         {
+            //             self.stack_push(value)
+            //         } else {
+            //             // The constant was an object, but not a string.
+            //             // Or the global with that name didn't exist.
+            //             Err(LoxError::RuntimeError)
+            //         }
+            //     }
+            //     // The constant wasn't an object
+            //     _ => Err(LoxError::RuntimeError),
+            // },
+            // I'm not sure if this is beautiful or horrible.
+            // It is, certainly, functional.
+            Instruction::SetGlobal(u) => self
+                .chunk
+                .get_constant(*u)
+                .as_object()
+                .ok_or(LoxError::RuntimeError) // constant wasn't an object
+                .and_then(|o| {
+                    let name = o
+                        .borrow()
+                        .as_string()
+                        .ok_or(LoxError::RuntimeError)? // constant wasn't a string
+                        .to_string();
+                    let value = self.stack_peek()?.clone();
+                    match self.globals.entry(name) {
+                        std::collections::hash_map::Entry::Occupied(mut o) => {
+                            o.insert(value);
+                            self.stack_pop().map(|_| ())
+                        }
+                        std::collections::hash_map::Entry::Vacant(_) => {
+                            Err(LoxError::RuntimeError) // Global wasn't already defined
+                        }
                     }
-                }
-                // The constant wasn't an object
-                _ => Err(LoxError::RuntimeError),
-            },
+                }),
         }
     }
 

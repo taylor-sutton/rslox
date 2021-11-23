@@ -133,7 +133,7 @@ impl Object {
         true
     }
 
-    fn as_string(&self) -> Option<&str> {
+    pub fn as_string(&self) -> Option<&str> {
         match self {
             Object::InternedString(i) => Some(i.as_str()),
         }

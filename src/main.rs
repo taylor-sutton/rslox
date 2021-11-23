@@ -32,6 +32,8 @@ fn repl() {
             break;
         }
         // TODO Interpret creates a fresh VM on every line, which is not very useful.
+        // In particular, we need an API that lets the heap and globals persist if we want
+        // a good REPL experience.
         interpret(&buf).unwrap_or_else(|e| println!("Interpret error: {:?}", e));
         io::stdout().flush().unwrap();
     }
