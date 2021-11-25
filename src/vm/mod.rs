@@ -368,7 +368,8 @@ pub enum LoxError {
 }
 
 #[derive(Debug, Clone, Error)]
-/// VM error that should never come up in code that compiled correct
+/// VM error that should never come up in code that compiled correctly.
+// TODO It's sort of unclear if these should just be panics or not. Maybe they should be.
 pub enum InternalError {
     /// An internal error due to Chunks having a limited number of slots for constants.
     #[error("tried to store more than the maximum number of constants in a chunk")]

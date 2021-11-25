@@ -237,13 +237,13 @@ where
     // such that the bytecode is a stack-ified verrsion of the expression e.g.
     // if the tokens are 1 + 2, it should emit two constant instructions then an add.
     fn expression(&mut self) {
-        self.expression_with_min_prec(least_precedence());
+        self.expression_with_min_prec(least_precedence(), true);
     }
 
     // Same contract as expression() regarding parsing an expression and emitting bytecode, but
     // stop if we encounter an operator with precendence strictly less than min.
     // This is the core Pratt loop.
-    fn expression_with_min_prec(&mut self, min_precedence: Precedence) {
+    fn expression_with_min_prec(&mut self, min_precedence: Precedence, allow_assignment: bool) {
         // We expect the first token to be either a prefix operator, or an atom
         let current_line = self.current_token.line;
         match self.current_token.typ {
@@ -279,24 +279,38 @@ where
             }
             TokenType::LeftParen => {
                 self.advance();
-                self.expression_with_min_prec(least_precedence()); // parens reset the precedence
+                self.expression_with_min_prec(least_precedence(), true); // parens reset the precedence and allow assignment
 
                 // the error will be after the expr, which is not ideal, but it's ok
                 self.consume(TokenType::RightParen, "Expecting ')' after expression.")
             }
             TokenType::Minus => {
                 self.advance();
-                self.expression_with_min_prec(Precedence::Unary);
+                self.expression_with_min_prec(Precedence::Unary, false);
                 self.write_instruction(Instruction::Negate, current_line);
             }
             TokenType::Bang => {
                 self.advance();
-                self.expression_with_min_prec(Precedence::Unary);
+                self.expression_with_min_prec(Precedence::Unary, false);
                 self.write_instruction(Instruction::Not, current_line);
             }
             TokenType::Identifier => {
+                // NOTE for future self: In the book's solution, this would call variable() which would call namedVariable()
                 let idx = self.identifier_constant_at_point();
-                self.write_instruction(Instruction::GetGlobal(idx), current_line);
+                match (allow_assignment, self.match_token(TokenType::Equal)) {
+                    (true, true) => {
+                        self.expression();
+                        self.write_instruction(Instruction::SetGlobal(idx), current_line);
+                        // I don't think an explicit return here makes any difference.
+                    }
+                    (false, true) => {
+                        self.error("Invalid assignment target.");
+                        return;
+                    }
+                    (_, false) => {
+                        self.write_instruction(Instruction::GetGlobal(idx), current_line);
+                    }
+                };
             }
             _ => {
                 self.error("Got unexpected token at beginning of expression.");
@@ -317,7 +331,9 @@ where
                 break;
             }
             self.advance();
-            self.expression_with_min_prec(prec.next());
+            // Once we've got the prefix and infix operator part of the expression, and are parsing the second operand,
+            // we no longer allow assignment
+            self.expression_with_min_prec(prec.next(), false);
 
             match next_typ {
                 TokenType::Minus => self.write_instruction(Instruction::Subtract, current_line),
