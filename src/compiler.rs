@@ -20,8 +20,9 @@
 // There are crates which provide macros for doing such things with enums, though.
 
 use crate::{
+    heap::Heap,
     scanner::{Token, TokenType},
-    vm::{Chunk, Heap, Instruction, Value},
+    vm::{Chunk, Instruction, Value},
 };
 
 // Parser takes a source of tokens, and spits out a chunk.

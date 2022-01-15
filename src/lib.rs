@@ -10,6 +10,8 @@ pub mod scanner;
 /// Takes tokens from the scanner and emits bytecode
 pub mod compiler;
 
+mod heap;
+
 /// End-to-end hook-up of the whole intepreter.
 /// State is not preserved between calls (yet).
 pub fn interpret(src: &str) -> Result<(), vm::LoxError> {

@@ -1,3 +1,28 @@
+// heap is our internal interface for allocating objects that can be tracked and GCed. Currently it does not GC,
+// merely allocates and tracks.
+//
+// The entry point is the `Heap` type and its `new_*` methods. These methods allocate a new Lox object and return a reference
+// which can be used to access the object: a `HeapRef`. In the future, the `HeapRef` will kept in an alive, usable state as long as it is
+// reachable from a GC root; for now it just lives as long as the Heap does. The underlying objects are all owned by the Heap, so they will
+// be invalid if he Heap is dropped. It is not undefined behavior to store and access HeapRef that is no longer alive - but it will panic.
+// Because of the shared ownership model, values on the heap must be accessed through special APIs.
+//
+// ```rust
+//    use rslox::vm::heap::{Heap, SharedObject, HeapRef}
+//    let mut heap = Heap::new();
+//    let string_ref = heap.new_string_with_value("my string");
+//    // the `map_as_*` method can access the inner value in a convenient way.
+//    string_ref.map_as_string(|s| assert_eq!(s, "my string"));
+//    // Alternately, the HeapRef can be converted the long way:
+//    let shared_obj: SharedObject = heap_ref.as_obj();
+//    match shared_obj.borrow() {
+//        Object::String(s) => assert_eq!(s, "my string"),
+//    };
+// ```
+//
+// Internally, the Heap keeps an ``Rc<RefCell<_>>`` and hands out `Weak<RefCell<_>>`. That way, the heap ref is only alive as long as the heap
+// keeps it alive. The HeapRef uses RefCell's runtime borrow checking, meaning that it can be a runtime panic to use incorrectly.
+
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
