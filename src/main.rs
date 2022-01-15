@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::process;
 
-use rslox::interpret;
+use rslox::{interpret, Interpreter};
 
 fn main() {
     let args: Vec<_> = env::args().collect();
@@ -20,6 +20,7 @@ fn main() {
 
 fn repl() {
     let mut buf = String::new();
+    let mut interpreter = Interpreter::new();
     loop {
         buf.clear();
         print!("> ");
@@ -34,7 +35,9 @@ fn repl() {
         // TODO Interpret creates a fresh VM on every line, which is not very useful.
         // In particular, we need an API that lets the heap and globals persist if we want
         // a good REPL experience.
-        interpret(&buf).unwrap_or_else(|e| println!("Interpret error: {:?}", e));
+        interpreter
+            .interpret(&buf)
+            .unwrap_or_else(|e| println!("Interpret error: {:?}", e));
         io::stdout().flush().unwrap();
     }
 }

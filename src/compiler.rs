@@ -28,13 +28,13 @@ use crate::{
 // Parser takes a source of tokens, and spits out a chunk.
 // It writes to stderr on errors. The public API for Parser is the compile() function.
 #[derive(Debug)]
-struct Parser<'a, T> {
+struct Parser<'a, 'heap, T> {
     tokens: T,
     chunk: Chunk,
     current_token: Token<'a>,
     had_error: bool,
     in_panic_mode: bool,
-    heap: Heap,
+    heap: &'heap mut Heap,
 }
 
 mod precedence {
@@ -104,7 +104,7 @@ mod precedence {
 
 use precedence::*;
 
-impl<'a, T> Parser<'a, T>
+impl<'a, 'heap, T> Parser<'a, 'heap, T>
 where
     T: Iterator<Item = Token<'a>>,
 {
@@ -395,7 +395,7 @@ where
 
 /// Take a source of tokens, attempt to compile it (writing errors to stderr)
 /// and if compilation succeeds, return the chunk.
-pub fn compile<'a, T>(mut tokens: T) -> Option<(Chunk, Heap)>
+pub fn compile<'a, T>(mut tokens: T, heap: &mut Heap) -> Option<Chunk>
 where
     T: Iterator<Item = Token<'a>>,
 {
@@ -406,10 +406,10 @@ where
         current_token: first_token,
         had_error: false,
         in_panic_mode: false,
-        heap: Heap::new(),
+        heap,
     };
     if !parser.compile() {
-        Some((parser.chunk, parser.heap))
+        Some(parser.chunk)
     } else {
         None
     }
@@ -424,8 +424,9 @@ mod test {
     fn test_thing() {
         let text = "(1 + 3 ) / -(-1 + -2)";
         let scanner = Scanner::new(text);
-        let chunk = compile(scanner).expect("compiling succeeds");
-        let debug_text = chunk.0.disassemble("Test");
+        let mut heap = Heap::new();
+        let chunk = compile(scanner, &mut heap).expect("compiling succeeds");
+        let debug_text = chunk.disassemble("Test");
         println!("{}", debug_text);
         // TODO figure out a good API for testing this
     }

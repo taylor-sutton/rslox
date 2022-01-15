@@ -25,7 +25,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
 #[derive(Debug)]
@@ -87,9 +87,9 @@ impl SharedObject {
         self.0.borrow()
     }
 
-    pub fn borrow_mut(&self) -> impl DerefMut<Target = Object> + '_ {
-        self.0.borrow_mut()
-    }
+    // fn borrow_mut(&self) -> impl DerefMut<Target = Object> + '_ {
+    //     self.0.borrow_mut()
+    // }
 }
 
 #[derive(Debug, Clone)]
@@ -154,9 +154,9 @@ impl Default for Heap {
 }
 
 impl Object {
-    pub fn is_string(&self) -> bool {
-        true
-    }
+    // pub fn is_string(&self) -> bool {
+    //     true
+    // }
 
     pub fn as_string(&self) -> Option<&str> {
         match self {

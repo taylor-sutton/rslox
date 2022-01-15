@@ -215,6 +215,8 @@ impl Chunk {
     }
 
     /// Return a human-readable string for a chunk.
+    // used for testing
+    #[allow(dead_code)]
     pub fn disassemble(&self, title: &str) -> String {
         let mut ret = format!("== {} ==\n", title);
         for (i, instruction) in self.code.iter().enumerate() {
@@ -335,7 +337,7 @@ const STACK_SIZE: usize = 256;
 
 /// A Vm is a stateful executor of chunks.
 #[derive(Debug)]
-pub struct Vm {
+struct Vm<'data> {
     chunk: Chunk,
     ip: usize,
     // The book uses an array for the stack, which means that the values are stored in-line with the VM,
@@ -345,8 +347,8 @@ pub struct Vm {
     //   indices on the stack, same as the book.
     // - Use a Vec; now accessing the stack requires goes out-of-line with the VM, but it's simpler
     stack: Vec<Value>,
-    globals: HashMap<String, Value>,
-    heap: Heap,
+    globals: &'data mut HashMap<String, Value>,
+    heap: &'data mut Heap,
 }
 
 /// Errors that can be returned by running the intepreter.
@@ -381,25 +383,24 @@ pub enum InternalError {
     IdentifierTypeError,
 }
 
-impl Vm {
+impl<'data> Vm<'data> {
     /// The VM must be initialized with some code to run.
-    pub fn new(chunk: Chunk) -> Self {
-        Vm::new_with_heap(chunk, Heap::new())
-    }
-
-    /// New Vm from a pre-existing heap.
-    pub fn new_with_heap(chunk: Chunk, heap: Heap) -> Self {
+    fn new(
+        chunk: Chunk,
+        heap: &'data mut Heap,
+        globals: &'data mut HashMap<String, Value>,
+    ) -> Self {
         Vm {
             chunk,
             ip: 0,
             stack: Vec::with_capacity(STACK_SIZE),
             heap,
-            globals: HashMap::new(),
+            globals,
         }
     }
 
     /// Run the interpreter until code finishes executing or an error occurs.
-    pub fn interpret(&mut self) -> Result<(), LoxError> {
+    fn interpret(&mut self) -> Result<(), LoxError> {
         while self.ip < self.chunk.code.len() {
             let instr = self.chunk.code[self.ip];
             #[cfg(feature = "trace")]
@@ -584,4 +585,13 @@ impl Vm {
             .last()
             .ok_or_else(|| InternalError::EmptyStack.into())
     }
+}
+
+/// Execute the chunk until code finishes executing or an error occurs.
+pub fn execute(
+    chunk: Chunk,
+    heap: &mut Heap,
+    globals: &mut HashMap<String, Value>,
+) -> Result<(), LoxError> {
+    Vm::new(chunk, heap, globals).interpret()
 }
