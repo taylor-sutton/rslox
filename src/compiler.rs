@@ -609,10 +609,3 @@ mod test {
         // TODO figure out a good API for testing this
     }
 }
-
-/*
-  Locals:
-  - At Runtime, locals are stored on the stack, and refered to by their offset in the stack
-  - At compile time, we maintain a pseudo stack in order to track where locals ara
-    the elements of the stack are (name, depth) pairs (so we can track nested scopes).
-*/
