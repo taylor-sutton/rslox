@@ -59,10 +59,14 @@ pub enum Instruction {
     Pop,
     /// Define a global whose value is popped from the stack, and whose name is the constant identified by the u8.
     DefineGlobal(u8),
-    /// Push onto the stack the global whose name is the constant with the given index
+    /// Push onto the stack the global whose name is the constant with the given index.
     GetGlobal(u8),
-    /// Pop and assign to the global whose name is the constant with the given index
+    /// Pop and assign to the global whose name is the constant with the given index.
     SetGlobal(u8),
+    /// Push local onto the top of the stack, where the local is on the stack at the index.
+    GetLocal(u8),
+    /// Set local at given index to the value on top of the stack, keeping the top of the stack as-is.
+    SetLocal(u8),
 }
 
 impl Instruction {
@@ -85,6 +89,8 @@ impl Instruction {
     const OP_CODE_DEFINE_GLOBAL: u8 = 16;
     const OP_CODE_GET_GLOBAL: u8 = 17;
     const OP_CODE_SET_GLOBAL: u8 = 18;
+    const OP_CODE_GET_LOCAL: u8 = 19;
+    const OP_CODE_SET_LOCAL: u8 = 20;
 
     /// write_to is a way to get an instruction as bytes in a way that, in some cases, can avoid the extra allocation
     /// that would result from the Into<Vec<u8>> impl
@@ -112,6 +118,8 @@ impl Instruction {
             Self::DefineGlobal(u) => writer.write(&[Instruction::OP_CODE_DEFINE_GLOBAL, *u]),
             Self::GetGlobal(u) => writer.write(&[Instruction::OP_CODE_GET_GLOBAL, *u]),
             Self::SetGlobal(u) => writer.write(&[Instruction::OP_CODE_SET_GLOBAL, *u]),
+            Self::GetLocal(u) => writer.write(&[Instruction::OP_CODE_GET_LOCAL, *u]),
+            Self::SetLocal(u) => writer.write(&[Instruction::OP_CODE_SET_LOCAL, *u]),
         }
     }
 
@@ -154,6 +162,8 @@ impl Display for Instruction {
             Instruction::DefineGlobal(u) => write!(f, "OP_DEFINE_GLOBAL {:4}", u),
             Instruction::GetGlobal(u) => write!(f, "OP_GET_GLOBAL {:4}", u),
             Instruction::SetGlobal(u) => write!(f, "OP_SET_GLOBAL {:4}", u),
+            Instruction::GetLocal(u) => write!(f, "OP_GET_LOCAL {:4}", u),
+            Instruction::SetLocal(u) => write!(f, "OP_SET_LOCAL {:4}", u),
         }
     }
 }
@@ -562,6 +572,12 @@ impl<'data> Vm<'data> {
                             ))
                         })
                 }),
+            // TODO these panic on malformed bytecode - is that okay?
+            Instruction::GetLocal(u) => self.stack_push(self.stack[usize::from(*u)].clone()),
+            Instruction::SetLocal(u) => {
+                self.stack[usize::from(*u)] = self.stack_peek()?.clone();
+                Ok(())
+            }
         }
     }
 

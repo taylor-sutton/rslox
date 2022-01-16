@@ -35,6 +35,128 @@ struct Parser<'a, 'heap, T> {
     had_error: bool,
     in_panic_mode: bool,
     heap: &'heap mut Heap,
+    compiler: Compiler<'a>,
+}
+
+#[derive(Debug)]
+struct Local<'token> {
+    name: Token<'token>,
+    depth: Option<usize>,
+}
+
+impl<'token> Local<'token> {
+    fn depth_or_panic(&self) -> usize {
+        self.depth.expect("depth of an uninitialized local")
+    }
+}
+
+#[derive(Debug)]
+struct Compiler<'tokens> {
+    // Book uses a fixed-sized array as a variable-sized array by tracking the number of elements in use
+    // Managing the lifetimes of possibly-not-initialized locals in an array is more trouble then it's worth
+    // So let's just use a Vec, and add bounds-checking when adding a local to keep the len within MAX_LOCALS
+    locals: Vec<Local<'tokens>>,
+    current_depth: usize,
+}
+
+impl<'token> Default for Compiler<'token> {
+    fn default() -> Self {
+        Self {
+            locals: Vec::with_capacity(Self::MAX_LOCALS),
+            current_depth: 0,
+        }
+    }
+}
+
+enum GetLocalResult {
+    Uninitialized,
+    NoSuchLocal,
+    FoundLocal(u8),
+}
+
+impl<'tokens> Compiler<'tokens> {
+    // Unfortunately, usize from u8 is not const (not in stable) so we can't use u8::MAX.into()
+    const MAX_LOCALS: usize = 256;
+
+    fn new() -> Compiler<'tokens> {
+        Compiler::default()
+    }
+
+    fn begin_scope(&mut self) {
+        self.current_depth += 1;
+    }
+
+    // TODO when chunk moves inside compiler, this doesn't need to return anything
+    // it needs to return now, so the parser can emit POPs
+    #[must_use]
+    fn end_scope(&mut self) -> usize {
+        let current_len = self.locals.len();
+        let new_len = self
+            .locals
+            .iter()
+            .enumerate()
+            .rev()
+            // Can't end scope in the middle of declaring a local, thus it's okay to
+            // call depth_or_panic
+            .rfind(|(_, local)| local.depth_or_panic() < self.current_depth)
+            .map(|(idx, _)| idx + 1)
+            .unwrap_or(0);
+        self.current_depth -= 1;
+        self.locals.resize_with(new_len, || {
+            unreachable!("resizing at end_scope locals shouldn't increase")
+        });
+        current_len - new_len
+    }
+
+    fn has_locals_capacity(&self) -> bool {
+        self.locals.len() < Self::MAX_LOCALS
+    }
+
+    // Try to add a local with given name, returning an error message on failure
+    fn add_unitialized_local(&mut self, name: Token<'tokens>) -> Result<(), &'static str> {
+        if !self.has_locals_capacity() {
+            return Err("Too many local variables in function.");
+        }
+
+        if self
+            .locals
+            .iter()
+            .rev()
+            // Can't create a new local *inside* creating a new local since declaration
+            // is a statement and we can't have statements inside expressions.
+            // Thus, safe to call depth_or_panic()
+            .take_while(|local| local.depth_or_panic() == self.current_depth)
+            .any(|local| local.name.raw == name.raw)
+        {
+            return Err("Already a variable with this name in this scope.");
+        }
+
+        self.locals.push(Local { name, depth: None });
+        Ok(())
+    }
+
+    fn initialize_current_local(&mut self) {
+        self.locals
+            .last_mut()
+            .expect("only call initialize_current_local when there is a local")
+            .depth = Some(self.current_depth)
+    }
+
+    fn get_local_by_name(&self, name: &str) -> GetLocalResult {
+        match self
+            .locals
+            .iter()
+            .enumerate()
+            .rfind(|(_, local)| local.name.raw == name)
+        {
+            None => GetLocalResult::NoSuchLocal,
+            Some((_, local)) if local.depth.is_none() => GetLocalResult::Uninitialized,
+            Some((idx, _)) => GetLocalResult::FoundLocal(
+                idx.try_into()
+                    .expect("converting usize index of locals vec into u8"),
+            ),
+        }
+    }
 }
 
 mod precedence {
@@ -169,7 +291,25 @@ where
             self.error("Expecting identifier as variable name.");
             return;
         }
-        let idx = self.identifier_constant_at_point();
+
+        // If this is a global, it is accessed by name. So the name needs
+        // to be saved as a constant with type string, and we need to emit an instruction
+        // to define it.
+        // OTOH, if it's a local, we just need the name at compile time in the locals array.
+        let idx_if_global = if self.compiler.current_depth == 0 {
+            Some(self.identifier_constant_at_point())
+        } else {
+            let local_token = self.current_token.clone();
+            self.advance();
+            match self.compiler.add_unitialized_local(local_token) {
+                Ok(_) => None,
+                Err(s) => {
+                    self.error(s);
+                    return;
+                }
+            }
+        };
+
         if self.match_token(TokenType::Equal) {
             self.expression();
         } else {
@@ -179,12 +319,23 @@ where
             TokenType::Semicolon,
             "Expect ';' after variable declaration.",
         );
-        self.write_instruction(Instruction::DefineGlobal(idx), var_line);
+        if let Some(idx) = idx_if_global {
+            self.write_instruction(Instruction::DefineGlobal(idx), var_line);
+        } else {
+            self.compiler.initialize_current_local();
+        }
     }
 
     fn statement(&mut self) {
         if self.match_token(TokenType::Print) {
             self.print_statement();
+        } else if self.match_token(TokenType::LeftBrace) {
+            self.compiler.begin_scope();
+            self.block();
+            let number_of_pops = self.compiler.end_scope();
+            for _ in 0..number_of_pops {
+                self.write_instruction(Instruction::Pop, self.current_token.line)
+            }
         } else {
             self.expression_statement();
         }
@@ -195,6 +346,15 @@ where
         self.expression();
         self.consume(TokenType::Semicolon, "Expect ';' after value.");
         self.write_instruction(Instruction::Print, line)
+    }
+
+    fn block(&mut self) {
+        while self.current_token.typ != TokenType::RightBrace
+            && self.current_token.typ != TokenType::Eof
+        {
+            self.declaration();
+        }
+        self.consume(TokenType::RightBrace, "Expect '}' after block.")
     }
 
     fn expression_statement(&mut self) {
@@ -297,11 +457,28 @@ where
             }
             TokenType::Identifier => {
                 // NOTE for future self: In the book's solution, this would call variable() which would call namedVariable()
-                let idx = self.identifier_constant_at_point();
+                let (get_instr, set_instr) =
+                    match self.compiler.get_local_by_name(&self.current_token.raw) {
+                        GetLocalResult::FoundLocal(local_idx) => {
+                            self.advance(); // advance over local name, discarding it
+                            (
+                                Instruction::GetLocal(local_idx),
+                                Instruction::SetLocal(local_idx),
+                            )
+                        }
+                        GetLocalResult::NoSuchLocal => {
+                            let idx = self.identifier_constant_at_point();
+                            (Instruction::GetGlobal(idx), Instruction::SetGlobal(idx))
+                        }
+                        GetLocalResult::Uninitialized => {
+                            self.error("Can't read local variable in its own initializer.");
+                            return;
+                        }
+                    };
                 match (allow_assignment, self.match_token(TokenType::Equal)) {
                     (true, true) => {
                         self.expression();
-                        self.write_instruction(Instruction::SetGlobal(idx), current_line);
+                        self.write_instruction(set_instr, current_line);
                         // I don't think an explicit return here makes any difference.
                     }
                     (false, true) => {
@@ -309,7 +486,7 @@ where
                         return;
                     }
                     (_, false) => {
-                        self.write_instruction(Instruction::GetGlobal(idx), current_line);
+                        self.write_instruction(get_instr, current_line);
                     }
                 };
             }
@@ -407,6 +584,7 @@ where
         had_error: false,
         in_panic_mode: false,
         heap,
+        compiler: Compiler::new(),
     };
     if !parser.compile() {
         Some(parser.chunk)
@@ -431,3 +609,10 @@ mod test {
         // TODO figure out a good API for testing this
     }
 }
+
+/*
+  Locals:
+  - At Runtime, locals are stored on the stack, and refered to by their offset in the stack
+  - At compile time, we maintain a pseudo stack in order to track where locals ara
+    the elements of the stack are (name, depth) pairs (so we can track nested scopes).
+*/
