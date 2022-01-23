@@ -19,15 +19,10 @@ macro_rules! binary_arithmetic {
 pub const JUMP_SENTINEL: u16 = 0;
 
 /// A single instruction, in a parsed/type-safe format.
-/// This type is helpful as an intermediate representation while compiling, before serializing into bytes.
-/// For execution, we have two options:
-/// 1. Parse the bytecode into a Rust type like this, incurring some slowdown while running the VM in exchange
-///   for safer and cleaner VM execution loop code.
-/// 2. Read the bytecode and execute it directly, for a slight speedup.
-/// I'm starting off with choice 1, on the "don't prematurely optimize" guideline, but we'll see
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Instruction {
     /// Pop and print the top value
+    #[allow(dead_code)]
     Return,
     /// Load a constant by its index into the constant table.
     Constant(u8),
@@ -78,87 +73,6 @@ pub enum Instruction {
     Jump(u16),
 }
 
-impl Instruction {
-    const OP_CODE_RETURN: u8 = 0;
-    const OP_CODE_CONSTANT: u8 = 1;
-    const OP_CODE_NEGATE: u8 = 2;
-    const OP_CODE_ADD: u8 = 3;
-    const OP_CODE_SUBTRACT: u8 = 4;
-    const OP_CODE_MULTIPLY: u8 = 5;
-    const OP_CODE_DIVIDE: u8 = 6;
-    const OP_CODE_NIL: u8 = 7;
-    const OP_CODE_FALSE: u8 = 8;
-    const OP_CODE_TRUE: u8 = 9;
-    const OP_CODE_NOT: u8 = 10;
-    const OP_CODE_EQUAL: u8 = 11;
-    const OP_CODE_GREATER: u8 = 12;
-    const OP_CODE_LESS: u8 = 13;
-    const OP_CODE_PRINT: u8 = 14;
-    const OP_CODE_POP: u8 = 15;
-    const OP_CODE_DEFINE_GLOBAL: u8 = 16;
-    const OP_CODE_GET_GLOBAL: u8 = 17;
-    const OP_CODE_SET_GLOBAL: u8 = 18;
-    const OP_CODE_GET_LOCAL: u8 = 19;
-    const OP_CODE_SET_LOCAL: u8 = 20;
-    const OP_CODE_JUMP_IF_FALSE: u8 = 21;
-    const OP_CODE_JUMP: u8 = 22;
-
-    /// write_to is a way to get an instruction as bytes in a way that, in some cases, can avoid the extra allocation
-    /// that would result from the Into<Vec<u8>> impl
-    pub fn write_to<W>(&self, writer: &mut W) -> std::io::Result<usize>
-    where
-        W: std::io::Write,
-    {
-        match self {
-            Self::Return => writer.write(&[Instruction::OP_CODE_RETURN]),
-            Self::Constant(u) => writer.write(&[Instruction::OP_CODE_CONSTANT, *u]),
-            Self::Negate => writer.write(&[Instruction::OP_CODE_NEGATE]),
-            Self::Not => writer.write(&[Instruction::OP_CODE_NOT]),
-            Self::Add => writer.write(&[Instruction::OP_CODE_ADD]),
-            Self::Subtract => writer.write(&[Instruction::OP_CODE_SUBTRACT]),
-            Self::Multiply => writer.write(&[Instruction::OP_CODE_MULTIPLY]),
-            Self::Divide => writer.write(&[Instruction::OP_CODE_DIVIDE]),
-            Self::False => writer.write(&[Instruction::OP_CODE_FALSE]),
-            Self::True => writer.write(&[Instruction::OP_CODE_TRUE]),
-            Self::Nil => writer.write(&[Instruction::OP_CODE_NIL]),
-            Self::Equal => writer.write(&[Instruction::OP_CODE_EQUAL]),
-            Self::Less => writer.write(&[Instruction::OP_CODE_LESS]),
-            Self::Greater => writer.write(&[Instruction::OP_CODE_GREATER]),
-            Self::Print => writer.write(&[Instruction::OP_CODE_PRINT]),
-            Self::Pop => writer.write(&[Instruction::OP_CODE_POP]),
-            Self::DefineGlobal(u) => writer.write(&[Instruction::OP_CODE_DEFINE_GLOBAL, *u]),
-            Self::GetGlobal(u) => writer.write(&[Instruction::OP_CODE_GET_GLOBAL, *u]),
-            Self::SetGlobal(u) => writer.write(&[Instruction::OP_CODE_SET_GLOBAL, *u]),
-            Self::GetLocal(u) => writer.write(&[Instruction::OP_CODE_GET_LOCAL, *u]),
-            Self::SetLocal(u) => writer.write(&[Instruction::OP_CODE_SET_LOCAL, *u]),
-            Self::JumpIfFalse(u) => {
-                writer.write_all(&[Instruction::OP_CODE_JUMP_IF_FALSE])?;
-                writer.write(&u.to_le_bytes())
-            }
-            Self::Jump(u) => {
-                writer.write_all(&[Instruction::OP_CODE_JUMP])?;
-                writer.write(&u.to_le_bytes())
-            }
-        }
-    }
-
-    /// Number of bytes in the byte represention of this instruction
-    pub fn num_bytes(&self) -> usize {
-        match self {
-            Instruction::Constant(_) => 2,
-            _ => 1,
-        }
-    }
-}
-
-impl From<&Instruction> for Vec<u8> {
-    fn from(val: &Instruction) -> Self {
-        let mut v = vec![];
-        val.write_to(&mut v).unwrap();
-        v
-    }
-}
-
 impl Display for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -190,6 +104,7 @@ impl Display for Instruction {
 }
 
 /// A chunk is the unit of execution for the VM.
+///
 /// I've translate the book's manually managed (len, capacity, ptr to values) into Vecs, since that's what Vecs are.
 #[derive(Debug)]
 pub struct Chunk {
