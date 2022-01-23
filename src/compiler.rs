@@ -22,7 +22,7 @@
 use crate::{
     heap::Heap,
     scanner::{Token, TokenType},
-    vm::{Chunk, Instruction, Value},
+    vm::{Chunk, Instruction, Value, JUMP_SENTINEL},
 };
 
 // Parser takes a source of tokens, and spits out a chunk.
@@ -313,7 +313,7 @@ where
         if self.match_token(TokenType::Equal) {
             self.expression();
         } else {
-            self.write_instruction(Instruction::Nil, self.current_token.line)
+            self.write_instruction(Instruction::Nil, self.current_token.line);
         }
         self.consume(
             TokenType::Semicolon,
@@ -334,8 +334,22 @@ where
             self.block();
             let number_of_pops = self.compiler.end_scope();
             for _ in 0..number_of_pops {
-                self.write_instruction(Instruction::Pop, self.current_token.line)
+                self.write_instruction_here(Instruction::Pop);
             }
+        } else if self.match_token(TokenType::If) {
+            self.consume(TokenType::LeftParen, "Expect '( after 'if'.");
+            self.expression();
+            self.consume(TokenType::RightParen, "Expect '( after 'if'.");
+            let then_idx = self.write_instruction_here(Instruction::JumpIfFalse(JUMP_SENTINEL));
+            self.write_instruction_here(Instruction::Pop);
+            self.statement();
+            let else_idx = self.write_instruction_here(Instruction::Jump(JUMP_SENTINEL));
+            self.chunk.patch_jump(then_idx);
+            self.write_instruction_here(Instruction::Pop);
+            if self.match_token(TokenType::Else) {
+                self.statement();
+            }
+            self.chunk.patch_jump(else_idx);
         } else {
             self.expression_statement();
         }
@@ -345,7 +359,7 @@ where
         let line = self.current_token.line;
         self.expression();
         self.consume(TokenType::Semicolon, "Expect ';' after value.");
-        self.write_instruction(Instruction::Print, line)
+        self.write_instruction(Instruction::Print, line);
     }
 
     fn block(&mut self) {
@@ -521,7 +535,7 @@ where
                 TokenType::EqualEqual => self.write_instruction(Instruction::Equal, current_line),
                 TokenType::BangEqual => {
                     self.write_instruction(Instruction::Equal, current_line);
-                    self.write_instruction(Instruction::Not, current_line);
+                    self.write_instruction(Instruction::Not, current_line)
                 }
                 TokenType::Less => self.write_instruction(Instruction::Less, current_line),
                 TokenType::GreaterEqual => {
@@ -531,18 +545,24 @@ where
                 TokenType::Greater => self.write_instruction(Instruction::Greater, current_line),
                 TokenType::LessEqual => {
                     self.write_instruction(Instruction::Greater, current_line);
-                    self.write_instruction(Instruction::Not, current_line);
+                    self.write_instruction(Instruction::Not, current_line)
                 }
                 _ => {
                     self.error("Unepxected token in infix operator position.");
                     break;
                 }
-            }
+            };
         }
     }
 
     // Convenience wrapper to write an instruction to the chunk with the current line.
-    fn write_instruction(&mut self, instruction: Instruction, line: usize) {
+    fn write_instruction_here(&mut self, instruction: Instruction) -> usize {
+        self.chunk
+            .write_instruction(instruction, self.current_token.line)
+    }
+
+    // Convenience wrapper to write an instruction to the chunk with the current line.
+    fn write_instruction(&mut self, instruction: Instruction, line: usize) -> usize {
         self.chunk.write_instruction(instruction, line)
     }
 

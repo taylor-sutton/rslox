@@ -16,6 +16,8 @@ macro_rules! binary_arithmetic {
     };
 }
 
+pub const JUMP_SENTINEL: u16 = 0;
+
 /// A single instruction, in a parsed/type-safe format.
 /// This type is helpful as an intermediate representation while compiling, before serializing into bytes.
 /// For execution, we have two options:
@@ -67,6 +69,13 @@ pub enum Instruction {
     GetLocal(u8),
     /// Set local at given index to the value on top of the stack, keeping the top of the stack as-is.
     SetLocal(u8),
+    /// If top of the stack is falsey, jump forward by this many instructions. Leaves stack as-is.
+    // Book note: Since we do chunks as vec of instructions (i.e. all instructions have the same size)
+    // we jump based on instruction index, not byte index.
+    JumpIfFalse(u16),
+    /// Jump forward this many instructions.
+    // see note on JumpIfFalse
+    Jump(u16),
 }
 
 impl Instruction {
@@ -91,6 +100,8 @@ impl Instruction {
     const OP_CODE_SET_GLOBAL: u8 = 18;
     const OP_CODE_GET_LOCAL: u8 = 19;
     const OP_CODE_SET_LOCAL: u8 = 20;
+    const OP_CODE_JUMP_IF_FALSE: u8 = 21;
+    const OP_CODE_JUMP: u8 = 22;
 
     /// write_to is a way to get an instruction as bytes in a way that, in some cases, can avoid the extra allocation
     /// that would result from the Into<Vec<u8>> impl
@@ -120,6 +131,14 @@ impl Instruction {
             Self::SetGlobal(u) => writer.write(&[Instruction::OP_CODE_SET_GLOBAL, *u]),
             Self::GetLocal(u) => writer.write(&[Instruction::OP_CODE_GET_LOCAL, *u]),
             Self::SetLocal(u) => writer.write(&[Instruction::OP_CODE_SET_LOCAL, *u]),
+            Self::JumpIfFalse(u) => {
+                writer.write_all(&[Instruction::OP_CODE_JUMP_IF_FALSE])?;
+                writer.write(&u.to_le_bytes())
+            }
+            Self::Jump(u) => {
+                writer.write_all(&[Instruction::OP_CODE_JUMP])?;
+                writer.write(&u.to_le_bytes())
+            }
         }
     }
 
@@ -164,6 +183,8 @@ impl Display for Instruction {
             Instruction::SetGlobal(u) => write!(f, "OP_SET_GLOBAL {:4}", u),
             Instruction::GetLocal(u) => write!(f, "OP_GET_LOCAL {:4}", u),
             Instruction::SetLocal(u) => write!(f, "OP_SET_LOCAL {:4}", u),
+            Instruction::JumpIfFalse(u) => write!(f, "OP_JUMP_IF_FALSE {:4}", u),
+            Instruction::Jump(u) => write!(f, "OP_JUMP {:4}", u),
         }
     }
 }
@@ -188,9 +209,10 @@ impl Chunk {
     }
 
     /// Add an instruction to the chunk's code.
-    pub fn write_instruction(&mut self, instruction: Instruction, line: usize) {
+    pub fn write_instruction(&mut self, instruction: Instruction, line: usize) -> usize {
         self.code.push(instruction);
         self.lines.push(line);
+        self.lines.len() - 1
     }
 
     /// Add a constant to the chunk's constants table, returning its index.
@@ -222,6 +244,20 @@ impl Chunk {
             _ => {}
         }
         ret
+    }
+
+    pub fn patch_jump(&mut self, jump_index: usize) {
+        let offset = self.code.len() - jump_index - 1;
+        let offset: u16 = offset
+            .try_into()
+            .expect("Tried to patch jump with too long an offset.");
+
+        let new_jump = match self.code[jump_index] {
+            Instruction::JumpIfFalse(u) if u == JUMP_SENTINEL => Instruction::JumpIfFalse(offset),
+            Instruction::Jump(u) if u == JUMP_SENTINEL => Instruction::Jump(offset),
+            _ => panic!("tried to patch non-jump instruction"),
+        };
+        self.code[jump_index] = new_jump;
     }
 
     /// Return a human-readable string for a chunk.
@@ -303,7 +339,7 @@ impl Value {
 
     fn is_falsey(&self) -> bool {
         match self {
-            Value::Boolean(b) => *b,
+            Value::Boolean(b) => !*b,
             Value::Nil => true,
             _ => false,
         }
@@ -576,6 +612,17 @@ impl<'data> Vm<'data> {
             Instruction::GetLocal(u) => self.stack_push(self.stack[usize::from(*u)].clone()),
             Instruction::SetLocal(u) => {
                 self.stack[usize::from(*u)] = self.stack_peek()?.clone();
+                Ok(())
+            }
+            Instruction::JumpIfFalse(u) => {
+                let v = self.stack_peek()?;
+                if v.is_falsey() {
+                    self.ip += usize::from(*u);
+                }
+                Ok(())
+            }
+            Instruction::Jump(u) => {
+                self.ip += usize::from(*u);
                 Ok(())
             }
         }
