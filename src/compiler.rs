@@ -219,6 +219,8 @@ mod precedence {
             TokenType::Greater => Some(Comparison),
             TokenType::LessEqual => Some(Comparison),
             TokenType::GreaterEqual => Some(Comparison),
+            TokenType::And => Some(And),
+            TokenType::Or => Some(Or),
             _ => None,
         }
     }
@@ -523,30 +525,68 @@ where
                 break;
             }
             self.advance();
+
+            // Due to the short-circuiting nature of 'and' and 'or', we need to insert some instructions
+            // before adding instructions for the second operand.
+            let jump_to_patch = match next_typ {
+                TokenType::And => {
+                    let end_jump =
+                        self.write_instruction_here(Instruction::JumpIfFalse(JUMP_SENTINEL));
+                    self.write_instruction_here(Instruction::Pop);
+                    Some(end_jump)
+                    // the book is written with parsing via recursion, rather than a loop
+                    // but we need to do something after the next iteration of hte loop, which is awk.
+                }
+                TokenType::Or => {
+                    let mini_jump =
+                        self.write_instruction_here(Instruction::JumpIfFalse(JUMP_SENTINEL));
+                    let end_jump = self.write_instruction_here(Instruction::Jump(JUMP_SENTINEL));
+                    self.write_instruction_here(Instruction::Pop);
+                    self.chunk.patch_jump(mini_jump);
+                    Some(end_jump)
+                }
+                _ => None,
+            };
+
             // Once we've got the prefix and infix operator part of the expression, and are parsing the second operand,
             // we no longer allow assignment
             self.expression_with_min_prec(prec.next(), false);
 
             match next_typ {
-                TokenType::Minus => self.write_instruction(Instruction::Subtract, current_line),
-                TokenType::Plus => self.write_instruction(Instruction::Add, current_line),
-                TokenType::Slash => self.write_instruction(Instruction::Divide, current_line),
-                TokenType::Star => self.write_instruction(Instruction::Multiply, current_line),
-                TokenType::EqualEqual => self.write_instruction(Instruction::Equal, current_line),
+                TokenType::Minus => {
+                    self.write_instruction(Instruction::Subtract, current_line);
+                }
+                TokenType::Plus => {
+                    self.write_instruction(Instruction::Add, current_line);
+                }
+                TokenType::Slash => {
+                    self.write_instruction(Instruction::Divide, current_line);
+                }
+                TokenType::Star => {
+                    self.write_instruction(Instruction::Multiply, current_line);
+                }
+                TokenType::EqualEqual => {
+                    self.write_instruction(Instruction::Equal, current_line);
+                }
                 TokenType::BangEqual => {
                     self.write_instruction(Instruction::Equal, current_line);
-                    self.write_instruction(Instruction::Not, current_line)
+                    self.write_instruction(Instruction::Not, current_line);
                 }
-                TokenType::Less => self.write_instruction(Instruction::Less, current_line),
+                TokenType::Less => {
+                    self.write_instruction(Instruction::Less, current_line);
+                }
                 TokenType::GreaterEqual => {
                     self.write_instruction(Instruction::Less, current_line);
-                    self.write_instruction(Instruction::Not, current_line)
+                    self.write_instruction(Instruction::Not, current_line);
                 }
-                TokenType::Greater => self.write_instruction(Instruction::Greater, current_line),
+                TokenType::Greater => {
+                    self.write_instruction(Instruction::Greater, current_line);
+                }
                 TokenType::LessEqual => {
                     self.write_instruction(Instruction::Greater, current_line);
-                    self.write_instruction(Instruction::Not, current_line)
+                    self.write_instruction(Instruction::Not, current_line);
                 }
+                TokenType::And | TokenType::Or => self.chunk.patch_jump(jump_to_patch.unwrap()),
                 _ => {
                     self.error("Unepxected token in infix operator position.");
                     break;
