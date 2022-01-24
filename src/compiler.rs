@@ -341,7 +341,7 @@ where
         } else if self.match_token(TokenType::If) {
             self.consume(TokenType::LeftParen, "Expect '( after 'if'.");
             self.expression();
-            self.consume(TokenType::RightParen, "Expect '( after 'if'.");
+            self.consume(TokenType::RightParen, "Expect ') after condition.");
             let then_idx = self.write_instruction_here(Instruction::JumpIfFalse(JUMP_SENTINEL));
             self.write_instruction_here(Instruction::Pop);
             self.statement();
@@ -352,6 +352,18 @@ where
                 self.statement();
             }
             self.chunk.patch_jump(else_idx);
+        } else if self.match_token(TokenType::While) {
+            self.consume(TokenType::LeftParen, "Expect '( after 'if'.");
+            let loop_check = self.chunk.code_len();
+            self.expression();
+            self.consume(TokenType::RightParen, "Expect ')' after condition.");
+            let jump_to_loop_exit =
+                self.write_instruction_here(Instruction::JumpIfFalse(JUMP_SENTINEL));
+            self.write_instruction_here(Instruction::Pop);
+            self.statement();
+            self.chunk.add_loop_to(loop_check, self.current_token.line);
+            self.chunk.patch_jump(jump_to_loop_exit);
+            self.write_instruction_here(Instruction::Pop);
         } else {
             self.expression_statement();
         }

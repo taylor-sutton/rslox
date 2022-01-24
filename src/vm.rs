@@ -71,6 +71,8 @@ pub enum Instruction {
     /// Jump forward this many instructions.
     // see note on JumpIfFalse
     Jump(u16),
+    /// Same as Jump, but subtract from IP instead.
+    Loop(u16),
 }
 
 impl Display for Instruction {
@@ -99,6 +101,7 @@ impl Display for Instruction {
             Instruction::SetLocal(u) => write!(f, "OP_SET_LOCAL {:4}", u),
             Instruction::JumpIfFalse(u) => write!(f, "OP_JUMP_IF_FALSE {:4}", u),
             Instruction::Jump(u) => write!(f, "OP_JUMP {:4}", u),
+            Instruction::Loop(u) => write!(f, "OP_LOOP {:4}", u),
         }
     }
 }
@@ -185,6 +188,19 @@ impl Chunk {
             ret.push('\n');
         }
         ret
+    }
+
+    pub fn add_loop_to(&mut self, loop_check: usize, line: usize) {
+        let offset = self.code.len() - loop_check + 1;
+        let offset: u16 = offset
+            .try_into()
+            .expect("Tried to patch jump with too long an offset.");
+
+        self.write_instruction(Instruction::Loop(offset), line);
+    }
+
+    pub fn code_len(&self) -> usize {
+        self.code.len()
     }
 }
 
@@ -538,6 +554,10 @@ impl<'data> Vm<'data> {
             }
             Instruction::Jump(u) => {
                 self.ip += usize::from(*u);
+                Ok(())
+            }
+            Instruction::Loop(u) => {
+                self.ip -= usize::from(*u);
                 Ok(())
             }
         }
