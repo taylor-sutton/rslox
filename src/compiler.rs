@@ -364,6 +364,74 @@ where
             self.chunk.add_loop_to(loop_check, self.current_token.line);
             self.chunk.patch_jump(jump_to_loop_exit);
             self.write_instruction_here(Instruction::Pop);
+        } else if self.match_token(TokenType::For) {
+            self.compiler.begin_scope();
+            self.consume(TokenType::LeftParen, "Expect '( after 'for'.");
+            if self.match_token(TokenType::Semicolon) {
+                // empty initializer is ok
+            } else if self.match_token(TokenType::Var) {
+                self.var_declaration(self.current_token.line);
+            } else {
+                self.expression();
+            }
+
+            // If there is no increment, the end-of-body loops to here
+            // if there is an increment, the end-of-body loops to the increment, and
+            // the increment jumps up to here.
+            let pre_condition_idx = self.chunk.code_len();
+
+            let mut end_of_body_jump = pre_condition_idx;
+
+            // condition is optional - leaving it out is an infinite loop
+            let condition_jump = if self.match_token(TokenType::Semicolon) {
+                None
+            } else {
+                self.expression();
+                self.consume(TokenType::Semicolon, "Expect ';' after loop condition.");
+                let jmp = self.write_instruction_here(Instruction::JumpIfFalse(JUMP_SENTINEL));
+                self.write_instruction_here(Instruction::Pop);
+                Some(jmp)
+            };
+
+            // increment (which is optional)
+            if !self.match_token(TokenType::RightParen) {
+                // The code for the increment goes immediately after the code for the condition
+                // (due to simple single-pass nature of our compiler)
+                // But it isn't supposed to run then! It's supposed to run after the body, before re-running
+                // the condition
+                // so we do some jump dancing.
+
+                let jump_to_body = self.write_instruction_here(Instruction::Jump(JUMP_SENTINEL));
+                let pre_increment_idx = self.chunk.code_len();
+
+                // the actual increment
+                self.expression();
+                // Increment's value isn't used
+                self.write_instruction_here(Instruction::Pop);
+                self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
+
+                self.chunk
+                    .add_loop_to(pre_condition_idx, self.current_token.line);
+
+                end_of_body_jump = pre_increment_idx;
+
+                self.chunk.patch_jump(jump_to_body);
+            }
+
+            self.statement();
+            self.chunk
+                .add_loop_to(end_of_body_jump, self.current_token.line);
+
+            if let Some(jmp) = condition_jump {
+                self.chunk.patch_jump(jmp);
+                // condition jumps to here if false, so pop the falsey value off the stack
+                self.write_instruction_here(Instruction::Pop);
+            }
+
+            let number_of_pops = self.compiler.end_scope();
+            for _ in 0..number_of_pops {
+                self.write_instruction_here(Instruction::Pop);
+            }
         } else {
             self.expression_statement();
         }
