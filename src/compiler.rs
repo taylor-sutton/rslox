@@ -20,7 +20,7 @@
 // There are crates which provide macros for doing such things with enums, though.
 
 use crate::{
-    heap::Heap,
+    heap::{Function, Heap, InternedString},
     scanner::{Token, TokenType},
     vm::{Chunk, Instruction, Value, JUMP_SENTINEL},
 };
@@ -59,15 +59,26 @@ struct FunctionCompiler<'tokens> {
     locals: Vec<Local<'tokens>>,
     current_depth: usize,
     chunk: Chunk,
+    arity: usize,
 }
 
 impl<'token> Default for FunctionCompiler<'token> {
     fn default() -> Self {
-        Self {
+        let mut ret = Self {
             locals: Vec::with_capacity(Self::MAX_LOCALS),
             current_depth: 0,
             chunk: Chunk::default(),
-        }
+            arity: 0,
+        };
+        // the first local is reserved for internal use
+        ret.add_unitialized_local(Token {
+            typ: TokenType::Identifier,
+            raw: "".into(),
+            line: 0,
+        })
+        .unwrap();
+        ret.initialize_current_local();
+        ret
     }
 }
 
@@ -85,8 +96,12 @@ impl<'tokens> FunctionCompiler<'tokens> {
         FunctionCompiler::default()
     }
 
-    fn end(self) -> Chunk {
-        self.chunk
+    fn end(self, name: Option<InternedString>) -> Function {
+        Function {
+            arity: self.arity,
+            code: self.chunk,
+            name,
+        }
     }
 
     fn write_instruction(&mut self, instruction: Instruction, line: usize) -> usize {
@@ -253,9 +268,9 @@ where
         self.had_error
     }
 
-    fn into_chunk(mut self) -> Chunk {
+    fn into_function(mut self) -> Function {
         assert!(self.functions.len() == 1);
-        self.functions.pop().unwrap().end()
+        self.functions.pop().unwrap().end(None)
     }
 
     fn declaration(&mut self) {
@@ -740,7 +755,7 @@ where
 
 /// Take a source of tokens, attempt to compile it (writing errors to stderr)
 /// and if compilation succeeds, return the chunk.
-pub fn compile<'a, T>(mut tokens: T, heap: &mut Heap) -> Option<Chunk>
+pub fn compile<'a, T>(mut tokens: T, heap: &mut Heap) -> Option<Function>
 where
     T: Iterator<Item = Token<'a>>,
 {
@@ -754,7 +769,7 @@ where
         functions: vec![FunctionCompiler::new()],
     };
     if !parser.compile() {
-        Some(parser.into_chunk())
+        Some(parser.into_function())
     } else {
         None
     }
@@ -762,17 +777,17 @@ where
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::scanner::Scanner;
-
-    #[test]
-    fn test_thing() {
-        let text = "(1 + 3 ) / -(-1 + -2)";
-        let scanner = Scanner::new(text);
-        let mut heap = Heap::new();
-        let chunk = compile(scanner, &mut heap).expect("compiling succeeds");
-        let debug_text = chunk.disassemble("Test");
-        println!("{}", debug_text);
-        // TODO figure out a good API for testing this
-    }
+    // TODO
+    // use super::*;
+    // use crate::scanner::Scanner;
+    // #[test]
+    // fn test_thing() {
+    //     let text = "(1 + 3 ) / -(-1 + -2)";
+    //     let scanner = Scanner::new(text);
+    //     let mut heap = Heap::new();
+    //     let chunk = compile(scanner, &mut heap).expect("compiling succeeds");
+    //     let debug_text = chunk.disassemble("Test");
+    //     println!("{}", debug_text);
+    //     // TODO figure out a good API for testing this
+    // }
 }

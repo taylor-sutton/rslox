@@ -234,6 +234,12 @@ impl PartialEq for Value {
             (Self::Object(l0), Self::Object(r0)) => {
                 match (&*l0.as_obj().borrow(), &*r0.as_obj().borrow()) {
                     (Object::InternedString(i1), Object::InternedString(i2)) => i1 == i2,
+                    (Object::Function(f1), Object::Function(f2)) => {
+                        let f1_ptr: *const Function = f1;
+                        let f2_ptr: *const Function = f2;
+                        f1_ptr == f2_ptr
+                    }
+                    _ => false,
                 }
             }
             _ => false,
@@ -247,11 +253,7 @@ impl Display for Value {
             Self::Number(val) => write!(f, "{}", val),
             Self::Boolean(b) => write!(f, "{}", b),
             Self::Nil => write!(f, "<nil>"),
-            Self::Object(o) => match &*o.as_obj().borrow() {
-                Object::InternedString(i) => {
-                    write!(f, r#""{}""#, i.as_str())
-                }
-            },
+            Self::Object(o) => write!(f, "{}", &*o.as_obj().borrow()),
         }
     }
 }

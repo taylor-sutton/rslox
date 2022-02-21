@@ -25,8 +25,11 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
+
+use crate::vm::Chunk;
 
 #[derive(Debug)]
 pub struct InternedString {
@@ -56,6 +59,12 @@ impl InternedString {
     }
 }
 
+impl Display for InternedString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// This impl, really, is the whole point of InternedString:
 /// We can check for equality in O(1) by just comparing our pointers.
 impl PartialEq for InternedString {
@@ -65,8 +74,34 @@ impl PartialEq for InternedString {
 }
 
 #[derive(Debug)]
+pub struct Function {
+    arity: usize,
+    code: Chunk,
+    name: Option<InternedString>, // If it's the main script, it has no name
+}
+
+impl Display for Function {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.name.as_ref() {
+            None => write!(f, "<script>>"),
+            Some(name) => write!(f, "<function {}>", name),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum Object {
     InternedString(InternedString),
+    Function(Function),
+}
+
+impl Display for Object {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Object::InternedString(i) => i.fmt(f),
+            Object::Function(i) => i.fmt(f),
+        }
+    }
 }
 
 // Internal representation of a heap object. The objects are arranged in a linked list using the `next` field, and the objects
@@ -132,6 +167,18 @@ impl Heap {
         }
     }
 
+    pub fn new_function(&mut self, function: Function) -> HeapRef {
+        let o = Rc::new(RefCell::new(Object::Function(function)));
+        let obj = HeapNode {
+            object: o.clone(),
+            next: self.head.take(),
+        };
+        self.head = Some(Box::new(obj));
+        HeapRef {
+            value: std::rc::Rc::downgrade(&o),
+        }
+    }
+
     // Print out all the objects on the heap in linked list order for debugging.
     #[allow(dead_code)]
     fn dump(&self) {
@@ -140,6 +187,9 @@ impl Heap {
             match &*node.object.borrow() {
                 Object::InternedString(i) => {
                     println!("{}", i.as_str());
+                }
+                Object::Function(f) => {
+                    println!("{}", f);
                 }
             }
             next = &node.next
@@ -161,6 +211,7 @@ impl Object {
     pub fn as_string(&self) -> Option<&str> {
         match self {
             Object::InternedString(i) => Some(i.as_str()),
+            _ => None,
         }
     }
 }
