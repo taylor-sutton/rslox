@@ -313,8 +313,8 @@ use crate::heap::*;
 // but we can hold off on them until they are useful
 
 #[derive(Debug)]
-struct CallFrame<'heap> {
-    function: &'heap Function,
+struct CallFrame {
+    function: HeapRef,
     ip: usize,
     frame_start_stack_index: usize,
 }
@@ -325,7 +325,7 @@ const STACK_SIZE: usize = 256;
 /// A Vm is a stateful executor of chunks.
 #[derive(Debug)]
 struct Vm<'data> {
-    frames: Vec<CallFrame<'data>>,
+    frames: Vec<CallFrame>,
     // The book uses an array for the stack, which means that the values are stored in-line with the VM,
     // rather than behind a pointer indirection.
     // We have a few options to do that in Rust:
@@ -372,31 +372,42 @@ pub enum InternalError {
 impl<'data> Vm<'data> {
     /// The VM must be initialized with some code to run.
     fn new(
-        script: &'data Function,
+        // pinky promise that this is a Function underneath
+        script_ref: HeapRef,
         heap: &'data mut Heap,
         globals: &'data mut HashMap<String, Value>,
     ) -> Self {
-        Vm {
+        let mut v = Vm {
             frames: vec![CallFrame {
-                function: &script,
+                function: script_ref.clone(),
                 ip: 0,
                 frame_start_stack_index: 0,
             }],
             stack: Vec::with_capacity(STACK_SIZE),
             heap,
             globals,
-        }
+        };
+        v.stack_push(Value::Object(script_ref)).unwrap();
+        v
     }
 
     /// Run the interpreter until code finishes executing or an error occurs.
     fn interpret(&mut self) -> Result<(), LoxError> {
         loop {
             let frame = self.frames.last_mut().unwrap();
-            let chunk = &frame.function.chunk;
-            if frame.ip >= chunk.code.len() {
+            let chunk_len = frame
+                .function
+                .map_as_function(|f| f.chunk.code_len())
+                .unwrap();
+            if frame.ip >= chunk_len {
                 break;
             }
-            let instr = chunk.code[frame.ip];
+
+            let instr = frame
+                .function
+                .map_as_function(|f| f.chunk.code[frame.ip])
+                .unwrap();
+
             #[cfg(feature = "trace")]
             {
                 print!("[ ");
@@ -404,13 +415,12 @@ impl<'data> Vm<'data> {
                     print!("{} ", val)
                 }
                 println!("]");
-                println!(
-                    "{}",
-                    frame
-                        .function
-                        .chunk
-                        .disassemble_instruction(&instr, frame.ip)
-                );
+                frame
+                    .function
+                    .map_as_function(|f| {
+                        println!("{}", f.chunk.disassemble_instruction(&instr, frame.ip))
+                    })
+                    .unwrap();
             }
             self.execute(&instr)?;
             self.frames.last_mut().unwrap().ip += 1;
@@ -421,7 +431,15 @@ impl<'data> Vm<'data> {
     fn execute(&mut self, instruction: &Instruction) -> Result<(), LoxError> {
         let frame = self.frames.last_mut().unwrap();
         let stack_base = frame.frame_start_stack_index;
-        let chunk = &frame.function.chunk;
+        // let chunk = script.chunk;
+        let get_constant = |idx: u8| -> Value {
+            if let Object::Function(script) = &*frame.function.as_obj().borrow() {
+                script.chunk.get_constant(idx).clone()
+            } else {
+                unreachable!()
+            }
+        };
+
         match instruction {
             Instruction::Return => {
                 let val = self.stack_pop()?;
@@ -429,10 +447,10 @@ impl<'data> Vm<'data> {
                 Ok(())
             }
             Instruction::Constant(idx) => {
-                let value = match chunk.get_constant(*idx) {
-                    Value::Object(o) => Value::Object(o.clone()),
-                    Value::Number(x) => Value::Number(*x),
-                    Value::Boolean(x) => Value::Boolean(*x),
+                let value = match get_constant(*idx) {
+                    Value::Object(o) => Value::Object(o),
+                    Value::Number(x) => Value::Number(x),
+                    Value::Boolean(x) => Value::Boolean(x),
                     Value::Nil => Value::Nil,
                 };
                 self.stack_push(value)
@@ -489,7 +507,7 @@ impl<'data> Vm<'data> {
                 Ok(())
             }
             Instruction::Pop => self.stack_pop().map(|_| ()),
-            Instruction::DefineGlobal(u) => match chunk.get_constant(*u) {
+            Instruction::DefineGlobal(u) => match get_constant(*u) {
                 Value::Object(o) => {
                     let value = self.stack_peek()?.clone();
                     if let Some(r) = o.map_as_string(|s| {
@@ -505,8 +523,7 @@ impl<'data> Vm<'data> {
                 // The constant wasn't an object
                 _ => Err(LoxError::RuntimeError("TODO".into())),
             },
-            Instruction::GetGlobal(u) => chunk
-                .get_constant(*u)
+            Instruction::GetGlobal(u) => get_constant(*u)
                 .as_heap_ref()
                 .ok_or(LoxError::InternalError(InternalError::IdentifierTypeError))
                 .and_then(|r: &HeapRef| -> Result<Value, LoxError> {
@@ -540,8 +557,7 @@ impl<'data> Vm<'data> {
             // },
             // I'm not sure if this is beautiful or horrible.
             // It is, certainly, functional.
-            Instruction::SetGlobal(u) => chunk
-                .get_constant(*u)
+            Instruction::SetGlobal(u) => get_constant(*u)
                 .as_object()
                 .ok_or(LoxError::InternalError(InternalError::IdentifierTypeError)) // constant wasn't an object
                 .and_then(|o| {
@@ -616,9 +632,9 @@ impl<'data> Vm<'data> {
 
 /// Execute the chunk until code finishes executing or an error occurs.
 pub fn execute(
-    script: Function,
+    script: HeapRef,
     heap: &mut Heap,
     globals: &mut HashMap<String, Value>,
 ) -> Result<(), LoxError> {
-    Vm::new(&script, heap, globals).interpret()
+    Vm::new(script, heap, globals).interpret()
 }

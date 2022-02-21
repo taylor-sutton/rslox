@@ -214,6 +214,13 @@ impl Object {
             _ => None,
         }
     }
+
+    pub fn as_function(&self) -> Option<&Function> {
+        match self {
+            Object::Function(f) => Some(f),
+            _ => None,
+        }
+    }
 }
 
 impl HeapRef {
@@ -229,6 +236,15 @@ impl HeapRef {
         F: FnOnce(&str) -> Ret,
     {
         Some(f(self.as_obj().borrow().as_string()?))
+    }
+
+    // Apply a function to the inner object if it's a string, returning the result if it's a string
+    // And none if it isn't a string
+    pub fn map_as_function<F, Ret>(&self, f: F) -> Option<Ret>
+    where
+        F: FnOnce(&Function) -> Ret,
+    {
+        Some(f(self.as_obj().borrow().as_function()?))
     }
 }
 

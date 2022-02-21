@@ -20,7 +20,7 @@
 // There are crates which provide macros for doing such things with enums, though.
 
 use crate::{
-    heap::{Function, Heap, InternedString},
+    heap::{Function, Heap, HeapRef, InternedString},
     scanner::{Token, TokenType},
     vm::{Chunk, Instruction, Value, JUMP_SENTINEL},
 };
@@ -356,6 +356,8 @@ where
         if let Some(idx) = idx_if_global {
             self.write_instruction(Instruction::DefineGlobal(idx), var_line);
         } else {
+            let n_locals: u8 = self.current_function().locals.len().try_into().unwrap();
+            self.write_instruction(Instruction::SetLocal(n_locals - 1), var_line);
             self.current_function().initialize_current_local();
         }
     }
@@ -755,7 +757,7 @@ where
 
 /// Take a source of tokens, attempt to compile it (writing errors to stderr)
 /// and if compilation succeeds, return the chunk.
-pub fn compile<'a, T>(mut tokens: T, heap: &mut Heap) -> Option<Function>
+pub fn compile<'a, T>(mut tokens: T, heap: &mut Heap) -> Option<HeapRef>
 where
     T: Iterator<Item = Token<'a>>,
 {
@@ -769,7 +771,8 @@ where
         functions: vec![FunctionCompiler::new()],
     };
     if !parser.compile() {
-        Some(parser.into_function())
+        let f = parser.into_function();
+        Some(heap.new_function(f))
     } else {
         None
     }
