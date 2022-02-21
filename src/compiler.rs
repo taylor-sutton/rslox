@@ -30,12 +30,13 @@ use crate::{
 #[derive(Debug)]
 struct Parser<'a, 'heap, T> {
     tokens: T,
-    chunk: Chunk,
     current_token: Token<'a>,
     had_error: bool,
     in_panic_mode: bool,
     heap: &'heap mut Heap,
-    compiler: Compiler<'a>,
+    // If len == 1, we're at the top level, script
+    // if len > 1, we're compiling a function.
+    functions: Vec<FunctionCompiler<'a>>,
 }
 
 #[derive(Debug)]
@@ -51,19 +52,21 @@ impl<'token> Local<'token> {
 }
 
 #[derive(Debug)]
-struct Compiler<'tokens> {
+struct FunctionCompiler<'tokens> {
     // Book uses a fixed-sized array as a variable-sized array by tracking the number of elements in use
     // Managing the lifetimes of possibly-not-initialized locals in an array is more trouble then it's worth
     // So let's just use a Vec, and add bounds-checking when adding a local to keep the len within MAX_LOCALS
     locals: Vec<Local<'tokens>>,
     current_depth: usize,
+    chunk: Chunk,
 }
 
-impl<'token> Default for Compiler<'token> {
+impl<'token> Default for FunctionCompiler<'token> {
     fn default() -> Self {
         Self {
             locals: Vec::with_capacity(Self::MAX_LOCALS),
             current_depth: 0,
+            chunk: Chunk::default(),
         }
     }
 }
@@ -74,22 +77,27 @@ enum GetLocalResult {
     FoundLocal(u8),
 }
 
-impl<'tokens> Compiler<'tokens> {
+impl<'tokens> FunctionCompiler<'tokens> {
     // Unfortunately, usize from u8 is not const (not in stable) so we can't use u8::MAX.into()
     const MAX_LOCALS: usize = 256;
 
-    fn new() -> Compiler<'tokens> {
-        Compiler::default()
+    fn new() -> FunctionCompiler<'tokens> {
+        FunctionCompiler::default()
+    }
+
+    fn end(self) -> Chunk {
+        self.chunk
+    }
+
+    fn write_instruction(&mut self, instruction: Instruction, line: usize) -> usize {
+        self.chunk.write_instruction(instruction, line)
     }
 
     fn begin_scope(&mut self) {
         self.current_depth += 1;
     }
 
-    // TODO when chunk moves inside compiler, this doesn't need to return anything
-    // it needs to return now, so the parser can emit POPs
-    #[must_use]
-    fn end_scope(&mut self) -> usize {
+    fn end_scope(&mut self) {
         let current_len = self.locals.len();
         let new_len = self
             .locals
@@ -105,7 +113,10 @@ impl<'tokens> Compiler<'tokens> {
         self.locals.resize_with(new_len, || {
             unreachable!("resizing at end_scope locals shouldn't increase")
         });
-        current_len - new_len
+        for _ in 0..(current_len - new_len) {
+            // TODO Line number of these Pops is lost
+            self.write_instruction(Instruction::Pop, 0);
+        }
     }
 
     fn has_locals_capacity(&self) -> bool {
@@ -242,6 +253,11 @@ where
         self.had_error
     }
 
+    fn into_chunk(mut self) -> Chunk {
+        assert!(self.functions.len() == 1);
+        self.functions.pop().unwrap().end()
+    }
+
     fn declaration(&mut self) {
         let var_line = self.current_token.line;
         if self.match_token(TokenType::Var) {
@@ -283,7 +299,8 @@ where
     fn identifier_constant_at_point(&mut self) -> u8 {
         let heap_ref = self.heap.new_string(self.current_token.raw.to_string());
         self.advance();
-        self.chunk
+        self.current_function()
+            .chunk
             .add_constant(Value::Object(heap_ref))
             .expect("TODO too many constants panic")
     }
@@ -298,12 +315,12 @@ where
         // to be saved as a constant with type string, and we need to emit an instruction
         // to define it.
         // OTOH, if it's a local, we just need the name at compile time in the locals array.
-        let idx_if_global = if self.compiler.current_depth == 0 {
+        let idx_if_global = if self.current_function().current_depth == 0 {
             Some(self.identifier_constant_at_point())
         } else {
             let local_token = self.current_token.clone();
             self.advance();
-            match self.compiler.add_unitialized_local(local_token) {
+            match self.current_function().add_unitialized_local(local_token) {
                 Ok(_) => None,
                 Err(s) => {
                     self.error(s);
@@ -324,7 +341,7 @@ where
         if let Some(idx) = idx_if_global {
             self.write_instruction(Instruction::DefineGlobal(idx), var_line);
         } else {
-            self.compiler.initialize_current_local();
+            self.current_function().initialize_current_local();
         }
     }
 
@@ -332,12 +349,9 @@ where
         if self.match_token(TokenType::Print) {
             self.print_statement();
         } else if self.match_token(TokenType::LeftBrace) {
-            self.compiler.begin_scope();
+            self.current_function().begin_scope();
             self.block();
-            let number_of_pops = self.compiler.end_scope();
-            for _ in 0..number_of_pops {
-                self.write_instruction_here(Instruction::Pop);
-            }
+            self.current_function().end_scope();
         } else if self.match_token(TokenType::If) {
             self.consume(TokenType::LeftParen, "Expect '( after 'if'.");
             self.expression();
@@ -346,26 +360,27 @@ where
             self.write_instruction_here(Instruction::Pop);
             self.statement();
             let else_idx = self.write_instruction_here(Instruction::Jump(JUMP_SENTINEL));
-            self.chunk.patch_jump(then_idx);
+            self.current_function().chunk.patch_jump(then_idx);
             self.write_instruction_here(Instruction::Pop);
             if self.match_token(TokenType::Else) {
                 self.statement();
             }
-            self.chunk.patch_jump(else_idx);
+            self.current_function().chunk.patch_jump(else_idx);
         } else if self.match_token(TokenType::While) {
             self.consume(TokenType::LeftParen, "Expect '( after 'if'.");
-            let loop_check = self.chunk.code_len();
+            let loop_check = self.current_function().chunk.code_len();
             self.expression();
             self.consume(TokenType::RightParen, "Expect ')' after condition.");
             let jump_to_loop_exit =
                 self.write_instruction_here(Instruction::JumpIfFalse(JUMP_SENTINEL));
             self.write_instruction_here(Instruction::Pop);
             self.statement();
-            self.chunk.add_loop_to(loop_check, self.current_token.line);
-            self.chunk.patch_jump(jump_to_loop_exit);
+            let line = self.current_token.line;
+            self.current_function().chunk.add_loop_to(loop_check, line);
+            self.current_function().chunk.patch_jump(jump_to_loop_exit);
             self.write_instruction_here(Instruction::Pop);
         } else if self.match_token(TokenType::For) {
-            self.compiler.begin_scope();
+            self.current_function().begin_scope();
             self.consume(TokenType::LeftParen, "Expect '( after 'for'.");
             if self.match_token(TokenType::Semicolon) {
                 // empty initializer is ok
@@ -378,7 +393,7 @@ where
             // If there is no increment, the end-of-body loops to here
             // if there is an increment, the end-of-body loops to the increment, and
             // the increment jumps up to here.
-            let pre_condition_idx = self.chunk.code_len();
+            let pre_condition_idx = self.current_function().chunk.code_len();
 
             let mut end_of_body_jump = pre_condition_idx;
 
@@ -402,7 +417,7 @@ where
                 // so we do some jump dancing.
 
                 let jump_to_body = self.write_instruction_here(Instruction::Jump(JUMP_SENTINEL));
-                let pre_increment_idx = self.chunk.code_len();
+                let pre_increment_idx = self.current_function().chunk.code_len();
 
                 // the actual increment
                 self.expression();
@@ -410,28 +425,29 @@ where
                 self.write_instruction_here(Instruction::Pop);
                 self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
 
-                self.chunk
-                    .add_loop_to(pre_condition_idx, self.current_token.line);
+                let line = self.current_token.line;
+                self.current_function()
+                    .chunk
+                    .add_loop_to(pre_condition_idx, line);
 
                 end_of_body_jump = pre_increment_idx;
 
-                self.chunk.patch_jump(jump_to_body);
+                self.current_function().chunk.patch_jump(jump_to_body);
             }
 
             self.statement();
-            self.chunk
-                .add_loop_to(end_of_body_jump, self.current_token.line);
+            let line = self.current_token.line;
+            self.current_function()
+                .chunk
+                .add_loop_to(end_of_body_jump, line);
 
             if let Some(jmp) = condition_jump {
-                self.chunk.patch_jump(jmp);
+                self.current_function().chunk.patch_jump(jmp);
                 // condition jumps to here if false, so pop the falsey value off the stack
                 self.write_instruction_here(Instruction::Pop);
             }
 
-            let number_of_pops = self.compiler.end_scope();
-            for _ in 0..number_of_pops {
-                self.write_instruction_here(Instruction::Pop);
-            }
+            self.current_function().end_scope();
         } else {
             self.expression_statement();
         }
@@ -505,9 +521,11 @@ where
         let current_line = self.current_token.line;
         match self.current_token.typ {
             TokenType::Number => {
+                let number_value = self.current_token.raw.parse().unwrap();
                 let idx = self
+                    .current_function()
                     .chunk
-                    .add_constant(Value::Number(self.current_token.raw.parse().unwrap()))
+                    .add_constant(Value::Number(number_value))
                     .expect("adding constant to chunk");
                 self.write_instruction(Instruction::Constant(idx), current_line);
                 self.advance();
@@ -516,6 +534,7 @@ where
                 let without_quotes = &self.current_token.raw[1..self.current_token.raw.len() - 1];
                 let node = self.heap.new_string(without_quotes.into());
                 let idx = self
+                    .current_function()
                     .chunk
                     .add_constant(Value::Object(node))
                     .expect("adding constant to chunk");
@@ -552,25 +571,27 @@ where
                 self.write_instruction(Instruction::Not, current_line);
             }
             TokenType::Identifier => {
+                // compiler can't tell that current_function()'s borrow of self can't overlap with this one
+                // so do a hacky clone
+                let tok = self.current_token.raw.to_owned();
                 // NOTE for future self: In the book's solution, this would call variable() which would call namedVariable()
-                let (get_instr, set_instr) =
-                    match self.compiler.get_local_by_name(&self.current_token.raw) {
-                        GetLocalResult::FoundLocal(local_idx) => {
-                            self.advance(); // advance over local name, discarding it
-                            (
-                                Instruction::GetLocal(local_idx),
-                                Instruction::SetLocal(local_idx),
-                            )
-                        }
-                        GetLocalResult::NoSuchLocal => {
-                            let idx = self.identifier_constant_at_point();
-                            (Instruction::GetGlobal(idx), Instruction::SetGlobal(idx))
-                        }
-                        GetLocalResult::Uninitialized => {
-                            self.error("Can't read local variable in its own initializer.");
-                            return;
-                        }
-                    };
+                let (get_instr, set_instr) = match self.current_function().get_local_by_name(&tok) {
+                    GetLocalResult::FoundLocal(local_idx) => {
+                        self.advance(); // advance over local name, discarding it
+                        (
+                            Instruction::GetLocal(local_idx),
+                            Instruction::SetLocal(local_idx),
+                        )
+                    }
+                    GetLocalResult::NoSuchLocal => {
+                        let idx = self.identifier_constant_at_point();
+                        (Instruction::GetGlobal(idx), Instruction::SetGlobal(idx))
+                    }
+                    GetLocalResult::Uninitialized => {
+                        self.error("Can't read local variable in its own initializer.");
+                        return;
+                    }
+                };
                 match (allow_assignment, self.match_token(TokenType::Equal)) {
                     (true, true) => {
                         self.expression();
@@ -622,7 +643,7 @@ where
                         self.write_instruction_here(Instruction::JumpIfFalse(JUMP_SENTINEL));
                     let end_jump = self.write_instruction_here(Instruction::Jump(JUMP_SENTINEL));
                     self.write_instruction_here(Instruction::Pop);
-                    self.chunk.patch_jump(mini_jump);
+                    self.current_function().chunk.patch_jump(mini_jump);
                     Some(end_jump)
                 }
                 _ => None,
@@ -666,7 +687,12 @@ where
                     self.write_instruction(Instruction::Greater, current_line);
                     self.write_instruction(Instruction::Not, current_line);
                 }
-                TokenType::And | TokenType::Or => self.chunk.patch_jump(jump_to_patch.unwrap()),
+                TokenType::And | TokenType::Or => {
+                    // self.compiler.chunk.patch_jump(jump_to_patch.unwrap())
+                    self.current_function()
+                        .chunk
+                        .patch_jump(jump_to_patch.unwrap())
+                }
                 _ => {
                     self.error("Unepxected token in infix operator position.");
                     break;
@@ -675,15 +701,17 @@ where
         }
     }
 
-    // Convenience wrapper to write an instruction to the chunk with the current line.
-    fn write_instruction_here(&mut self, instruction: Instruction) -> usize {
-        self.chunk
-            .write_instruction(instruction, self.current_token.line)
+    fn current_function(&mut self) -> &mut FunctionCompiler<'a> {
+        self.functions.last_mut().unwrap()
     }
 
     // Convenience wrapper to write an instruction to the chunk with the current line.
+    fn write_instruction_here(&mut self, instruction: Instruction) -> usize {
+        self.write_instruction(instruction, self.current_token.line)
+    }
+
     fn write_instruction(&mut self, instruction: Instruction, line: usize) -> usize {
-        self.chunk.write_instruction(instruction, line)
+        self.current_function().write_instruction(instruction, line)
     }
 
     fn error(&mut self, message: &str) {
@@ -719,15 +747,14 @@ where
     let first_token = tokens.next().unwrap();
     let mut parser = Parser {
         tokens,
-        chunk: Chunk::new(),
         current_token: first_token,
         had_error: false,
         in_panic_mode: false,
         heap,
-        compiler: Compiler::new(),
+        functions: vec![FunctionCompiler::new()],
     };
     if !parser.compile() {
-        Some(parser.chunk)
+        Some(parser.into_chunk())
     } else {
         None
     }
