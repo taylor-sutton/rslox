@@ -99,7 +99,7 @@ impl<'tokens> FunctionCompiler<'tokens> {
     fn end(self, name: Option<InternedString>) -> Function {
         Function {
             arity: self.arity,
-            code: self.chunk,
+            chunk: self.chunk,
             name,
         }
     }

@@ -75,9 +75,9 @@ impl PartialEq for InternedString {
 
 #[derive(Debug)]
 pub struct Function {
-    arity: usize,
-    code: Chunk,
-    name: Option<InternedString>, // If it's the main script, it has no name
+    pub arity: usize,
+    pub chunk: Chunk,
+    pub name: Option<InternedString>, // If it's the main script, it has no name
 }
 
 impl Display for Function {
