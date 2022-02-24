@@ -121,7 +121,7 @@ impl<'tokens> FunctionCompiler<'tokens> {
             .rev()
             // Can't end scope in the middle of declaring a local, thus it's okay to
             // call depth_or_panic
-            .rfind(|(_, local)| local.depth_or_panic() < self.current_depth)
+            .find(|(_, local)| local.depth_or_panic() < self.current_depth)
             .map(|(idx, _)| idx + 1)
             .unwrap_or(0);
         self.current_depth -= 1;
@@ -356,8 +356,6 @@ where
         if let Some(idx) = idx_if_global {
             self.write_instruction(Instruction::DefineGlobal(idx), var_line);
         } else {
-            let n_locals: u8 = self.current_function().locals.len().try_into().unwrap();
-            self.write_instruction(Instruction::SetLocal(n_locals - 1), var_line);
             self.current_function().initialize_current_local();
         }
     }
