@@ -20,7 +20,7 @@
 // There are crates which provide macros for doing such things with enums, though.
 
 use crate::{
-    heap::{Function, Heap, HeapRef, InternedString},
+    heap::{Function, Heap, HeapRef},
     scanner::{Token, TokenType},
     vm::{Chunk, Instruction, Value, JUMP_SENTINEL},
 };
@@ -96,7 +96,7 @@ impl<'tokens> FunctionCompiler<'tokens> {
         FunctionCompiler::default()
     }
 
-    fn end(self, name: Option<InternedString>) -> Function {
+    fn end(self, name: Option<HeapRef>) -> Function {
         Function {
             arity: self.arity,
             chunk: self.chunk,
@@ -277,6 +277,8 @@ where
         let var_line = self.current_token.line;
         if self.match_token(TokenType::Var) {
             self.var_declaration(var_line);
+        } else if self.match_token(TokenType::Fun) {
+            self.fun_declaration();
         } else {
             self.statement();
         }
@@ -318,6 +320,43 @@ where
             .chunk
             .add_constant(Value::Object(heap_ref))
             .expect("TODO too many constants panic")
+    }
+
+    fn fun_declaration(&mut self) {
+        // TODO may do the wrong thing on syntax error if the thing following "fun" is not an identifier
+        let fn_name_heap_ref = self.heap.new_string(self.current_token.raw.to_string());
+
+        // If this is a global, it is accessed by name. So the name needs
+        // to be saved as a constant with type string, and we need to emit an instruction
+        // to define it.
+        // OTOH, if it's a local, we still need the name at runtime for the Function obj
+        let idx_if_global = if self.current_function().current_depth == 0 {
+            Some(
+                self.current_function()
+                    .chunk
+                    .add_constant(Value::Object(fn_name_heap_ref.clone()))
+                    .expect("TODO too many constants panic"),
+            )
+        } else {
+            let local_token = self.current_token.clone();
+            match self.current_function().add_unitialized_local(local_token) {
+                Ok(_) => {
+                    self.current_function().initialize_current_local();
+                    None
+                }
+                Err(s) => {
+                    self.error(s);
+                    return;
+                }
+            }
+        };
+        self.advance(); // move past identifier
+
+        self.function(fn_name_heap_ref);
+
+        if let Some(idx) = idx_if_global {
+            self.write_instruction(Instruction::DefineGlobal(idx), 0);
+        }
     }
 
     fn var_declaration(&mut self, var_line: usize) {
@@ -750,6 +789,34 @@ where
         };
         eprintln!(": {}", message);
         self.had_error = true;
+    }
+
+    fn function(&mut self, fn_name: HeapRef) {
+        self.functions.push(FunctionCompiler::default());
+        self.current_function().begin_scope();
+
+        self.consume(TokenType::LeftParen, "Expect '(' after function name.");
+        self.consume(TokenType::RightParen, "Expect ')' after parameters.");
+        self.consume(TokenType::LeftBrace, "Expect '{' before function body.");
+        self.block();
+
+        let compiler = self.functions.pop().unwrap();
+
+        // TODO need to name this function, and need to make it into a heap ref.
+        // I think the book store the name in the FunctionCompiler, essentially? Since it's part of the current function
+        // so move this from a param of end into the struct itself? Or something?
+        let f = compiler.end(Some(fn_name));
+
+        let heap_object = self.heap.new_function(f);
+        let constant_idx = self
+            .current_function()
+            .chunk
+            .add_constant(Value::Object(heap_object))
+            .expect("adding function to constants");
+
+        let line = self.current_token.line;
+        self.current_function()
+            .write_instruction(Instruction::Constant(constant_idx), line);
     }
 }
 

@@ -77,14 +77,14 @@ impl PartialEq for InternedString {
 pub struct Function {
     pub arity: usize,
     pub chunk: Chunk,
-    pub name: Option<InternedString>, // If it's the main script, it has no name
+    pub name: Option<HeapRef>, // If it's the main script, it has no name
 }
 
 impl Display for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.name.as_ref() {
             None => write!(f, "<script>>"),
-            Some(name) => write!(f, "<function {}>", name),
+            Some(name) => write!(f, "<function {}>", &*name.as_obj().borrow()),
         }
     }
 }

@@ -319,7 +319,6 @@ struct CallFrame {
     frame_start_stack_index: usize,
 }
 
-const FRAMES_MAX: usize = 64;
 const STACK_SIZE: usize = 256;
 
 /// A Vm is a stateful executor of chunks.
