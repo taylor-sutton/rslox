@@ -38,7 +38,10 @@ impl Interpreter {
         let c = compiler::compile(s, &mut self.heap);
         match c {
             None => Err(vm::LoxError::SyntaxError),
-            Some(c) => vm::execute(c, &mut self.heap, &mut self.globals),
+            Some(c) => {
+                // c.map_as_function(|f| println!("{}\n", f.chunk.disassemble("DUMP")));
+                vm::execute(c, &mut self.heap, &mut self.globals)
+            }
         }
     }
 }

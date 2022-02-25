@@ -96,7 +96,9 @@ impl<'tokens> FunctionCompiler<'tokens> {
         FunctionCompiler::default()
     }
 
-    fn end(self, name: Option<HeapRef>) -> Function {
+    fn end(mut self, name: Option<HeapRef>) -> Function {
+        self.write_instruction(Instruction::Nil, 0);
+        self.write_instruction(Instruction::Return, 0);
         Function {
             arity: self.arity,
             chunk: self.chunk,
@@ -247,6 +249,7 @@ mod precedence {
             TokenType::GreaterEqual => Some(Comparison),
             TokenType::And => Some(And),
             TokenType::Or => Some(Or),
+            TokenType::LeftParen => Some(Call),
             _ => None,
         }
     }
@@ -703,6 +706,12 @@ where
                 _ => None,
             };
 
+            if next_typ == TokenType::LeftParen {
+                let arg_count = self.arg_list();
+                self.current_function()
+                    .write_instruction(Instruction::Call(arg_count), current_line);
+                continue;
+            }
             // Once we've got the prefix and infix operator part of the expression, and are parsing the second operand,
             // we no longer allow assignment
             self.expression_with_min_prec(prec.next(), false);
@@ -741,12 +750,10 @@ where
                     self.write_instruction(Instruction::Greater, current_line);
                     self.write_instruction(Instruction::Not, current_line);
                 }
-                TokenType::And | TokenType::Or => {
-                    // self.compiler.chunk.patch_jump(jump_to_patch.unwrap())
-                    self.current_function()
-                        .chunk
-                        .patch_jump(jump_to_patch.unwrap())
-                }
+                TokenType::And | TokenType::Or => self
+                    .current_function()
+                    .chunk
+                    .patch_jump(jump_to_patch.unwrap()),
                 _ => {
                     self.error("Unepxected token in infix operator position.");
                     break;
@@ -796,15 +803,31 @@ where
         self.current_function().begin_scope();
 
         self.consume(TokenType::LeftParen, "Expect '(' after function name.");
+        if self.current_token.typ != TokenType::RightParen {
+            loop {
+                self.current_function().arity += 1;
+                if self.current_function().arity > 255 {
+                    self.error("Can't have more than 255 parameters");
+                }
+                let token = self.current_token.clone();
+                self.current_function()
+                    .add_unitialized_local(token)
+                    .unwrap();
+                self.current_function().initialize_current_local();
+                self.advance();
+
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+
         self.consume(TokenType::RightParen, "Expect ')' after parameters.");
         self.consume(TokenType::LeftBrace, "Expect '{' before function body.");
         self.block();
 
         let compiler = self.functions.pop().unwrap();
 
-        // TODO need to name this function, and need to make it into a heap ref.
-        // I think the book store the name in the FunctionCompiler, essentially? Since it's part of the current function
-        // so move this from a param of end into the struct itself? Or something?
         let f = compiler.end(Some(fn_name));
 
         let heap_object = self.heap.new_function(f);
@@ -817,6 +840,21 @@ where
         let line = self.current_token.line;
         self.current_function()
             .write_instruction(Instruction::Constant(constant_idx), line);
+    }
+
+    fn arg_list(&mut self) -> u8 {
+        let mut arg_count = 0;
+        if self.current_token.typ != TokenType::RightParen {
+            loop {
+                self.expression();
+                arg_count += 1;
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenType::RightParen, "Expect ')' after arguments.");
+        arg_count
     }
 }
 
@@ -859,3 +897,13 @@ mod test {
     //     // TODO figure out a good API for testing this
     // }
 }
+
+/*
+in global scope:
+   parseVariable consumes identifier, then adds the name to constants table, returning idx
+   and defineVariable emits OP_DEFINE_GLOBAL with that idx
+
+in local scope:
+   parseVariable consumes identifier, then calls add_unitialized_local
+   and defineVariable calls mark_init
+*/

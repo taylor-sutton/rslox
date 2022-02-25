@@ -83,7 +83,7 @@ pub struct Function {
 impl Display for Function {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.name.as_ref() {
-            None => write!(f, "<script>>"),
+            None => write!(f, "<script>"),
             Some(name) => write!(f, "<function {}>", &*name.as_obj().borrow()),
         }
     }

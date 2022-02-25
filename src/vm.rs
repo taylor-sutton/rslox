@@ -73,6 +73,8 @@ pub enum Instruction {
     Jump(u16),
     /// Same as Jump, but subtract from IP instead.
     Loop(u16),
+    /// Call the function on top of the stack, with u8 as number of args
+    Call(u8),
 }
 
 impl Display for Instruction {
@@ -102,6 +104,7 @@ impl Display for Instruction {
             Instruction::JumpIfFalse(u) => write!(f, "OP_JUMP_IF_FALSE {:4}", u),
             Instruction::Jump(u) => write!(f, "OP_JUMP {:4}", u),
             Instruction::Loop(u) => write!(f, "OP_LOOP {:4}", u),
+            Instruction::Call(u) => write!(f, "OP_CALL {:4}", u),
         }
     }
 }
@@ -422,7 +425,12 @@ impl<'data> Vm<'data> {
                     .unwrap();
             }
             self.execute(&instr)?;
-            self.frames.last_mut().unwrap().ip += 1;
+            if self.frames.is_empty() {
+                return Ok(());
+            }
+            if !matches!(&instr, &Instruction::Call(_)) {
+                self.frames.last_mut().unwrap().ip += 1;
+            }
         }
         Ok(())
     }
@@ -442,7 +450,13 @@ impl<'data> Vm<'data> {
         match instruction {
             Instruction::Return => {
                 let val = self.stack_pop()?;
-                println!("{}", val);
+                let old_frame = self.frames.pop().unwrap();
+                if self.frames.is_empty() {
+                    return Ok(());
+                }
+                self.stack
+                    .resize_with(old_frame.frame_start_stack_index, || todo!());
+                self.stack_push(val)?;
                 Ok(())
             }
             Instruction::Constant(idx) => {
@@ -604,7 +618,36 @@ impl<'data> Vm<'data> {
                 frame.ip -= usize::from(*u);
                 Ok(())
             }
+            Instruction::Call(u) => {
+                if !self.call_value(self.stack_peek_n(*u)?.clone(), *u) {
+                    Err(LoxError::RuntimeError(
+                        "Wrong number of arguments".to_string(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
         }
+    }
+
+    fn stack_peek_n(&self, n: u8) -> Result<&Value, LoxError> {
+        self.stack
+            .get(self.stack.len() - usize::from(n) - 1)
+            .ok_or_else(|| InternalError::EmptyStack.into())
+    }
+
+    fn call_value(&mut self, value: Value, arg_count: u8) -> bool {
+        if let Value::Object(o) = value {
+            if matches!(&*o.as_obj().borrow(), Object::Function(_)) {
+                self.frames.push(CallFrame {
+                    function: o,
+                    ip: 0,
+                    frame_start_stack_index: self.stack.len() - usize::from(arg_count) - 1,
+                });
+                return true;
+            }
+        }
+        false
     }
 
     fn stack_push(&mut self, value: Value) -> Result<(), LoxError> {
@@ -623,9 +666,7 @@ impl<'data> Vm<'data> {
     }
 
     fn stack_peek(&self) -> Result<&Value, LoxError> {
-        self.stack
-            .last()
-            .ok_or_else(|| InternalError::EmptyStack.into())
+        self.stack_peek_n(0)
     }
 }
 
