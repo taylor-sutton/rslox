@@ -505,6 +505,14 @@ where
             }
 
             self.current_function().end_scope();
+        } else if self.match_token(TokenType::Return) {
+            if self.match_token(TokenType::Semicolon) {
+                self.write_instruction_here(Instruction::Return);
+            } else {
+                self.expression();
+                self.consume(TokenType::Semicolon, "Expect ';' after return value");
+                self.write_instruction_here(Instruction::Return);
+            }
         } else {
             self.expression_statement();
         }

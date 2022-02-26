@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::{Display, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 
@@ -390,12 +391,24 @@ impl<'data> Vm<'data> {
             globals,
         };
         v.stack_push(Value::Object(script_ref)).unwrap();
+        v.define_native(
+            "clock".to_string(),
+            Box::new(|_| {
+                Value::Number(
+                    SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as f64,
+                )
+            }),
+        );
         v
     }
 
     /// Run the interpreter until code finishes executing or an error occurs.
     fn interpret(&mut self) -> Result<(), LoxError> {
         loop {
+            let frames_len = self.frames.len();
             let frame = self.frames.last_mut().unwrap();
             let chunk_len = frame
                 .function
@@ -428,7 +441,9 @@ impl<'data> Vm<'data> {
             if self.frames.is_empty() {
                 return Ok(());
             }
-            if !matches!(&instr, &Instruction::Call(_)) {
+            // increase IP *unless* there's a new frame on the stack
+            // that happens if it's OP_CALL *and* it was not a native function
+            if self.frames.len() <= frames_len {
                 self.frames.last_mut().unwrap().ip += 1;
             }
         }
@@ -638,16 +653,37 @@ impl<'data> Vm<'data> {
 
     fn call_value(&mut self, value: Value, arg_count: u8) -> bool {
         if let Value::Object(o) = value {
-            if matches!(&*o.as_obj().borrow(), Object::Function(_)) {
-                self.frames.push(CallFrame {
-                    function: o,
-                    ip: 0,
-                    frame_start_stack_index: self.stack.len() - usize::from(arg_count) - 1,
-                });
-                return true;
-            }
+            match &*o.as_obj().borrow() {
+                Object::Function(_) => {
+                    self.frames.push(CallFrame {
+                        function: o,
+                        ip: 0,
+                        frame_start_stack_index: self.stack.len() - usize::from(arg_count) - 1,
+                    });
+                    return true;
+                }
+                Object::NativeFunction(native) => {
+                    let range = self.stack.len() - usize::from(arg_count)..self.stack.len();
+                    let v = native.call(&self.stack[range]);
+                    self.stack_push(v).unwrap();
+                    return true;
+                }
+                _ => {}
+            };
         }
         false
+    }
+
+    fn define_native(&mut self, name: String, f: Box<dyn Fn(&[Value]) -> Value>) {
+        // we do this dance so that if a GC triggers while defining the native, its okay
+        // let name = self.heap.new_string(name);
+        // self.stack_push(Value::Object(name)).unwrap();
+        // we don't intern global names, I guess :/
+        let f = self.heap.new_native(NativeFunction::new(f));
+        self.stack_push(Value::Object(f)).unwrap();
+        self.globals
+            .insert(name, self.stack.last().unwrap().clone());
+        self.stack_pop().unwrap();
     }
 
     fn stack_push(&mut self, value: Value) -> Result<(), LoxError> {

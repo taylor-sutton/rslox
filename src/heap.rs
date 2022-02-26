@@ -25,11 +25,11 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::ops::Deref;
 use std::rc::{Rc, Weak};
 
-use crate::vm::Chunk;
+use crate::vm::{Chunk, Value};
 
 #[derive(Debug)]
 pub struct InternedString {
@@ -89,17 +89,39 @@ impl Display for Function {
     }
 }
 
+pub struct NativeFunction {
+    func: Box<dyn Fn(&[Value]) -> Value>,
+}
+
+impl NativeFunction {
+    pub fn new(func: Box<dyn Fn(&[Value]) -> Value>) -> NativeFunction {
+        NativeFunction { func }
+    }
+
+    pub fn call(&self, values: &[Value]) -> Value {
+        (self.func)(values)
+    }
+}
+
+impl Debug for NativeFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<native fn>")
+    }
+}
+
 #[derive(Debug)]
 pub enum Object {
     InternedString(InternedString),
     Function(Function),
+    NativeFunction(NativeFunction),
 }
 
 impl Display for Object {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Object::InternedString(i) => i.fmt(f),
-            Object::Function(i) => i.fmt(f),
+            Object::InternedString(i) => Display::fmt(&i, f),
+            Object::Function(i) => Display::fmt(&i, f),
+            Object::NativeFunction(_) => write!(f, "<native function>"),
         }
     }
 }
@@ -179,6 +201,18 @@ impl Heap {
         }
     }
 
+    pub fn new_native(&mut self, function: NativeFunction) -> HeapRef {
+        let o = Rc::new(RefCell::new(Object::NativeFunction(function)));
+        let obj = HeapNode {
+            object: o.clone(),
+            next: self.head.take(),
+        };
+        self.head = Some(Box::new(obj));
+        HeapRef {
+            value: std::rc::Rc::downgrade(&o),
+        }
+    }
+
     // Print out all the objects on the heap in linked list order for debugging.
     #[allow(dead_code)]
     fn dump(&self) {
@@ -190,6 +224,9 @@ impl Heap {
                 }
                 Object::Function(f) => {
                     println!("{}", f);
+                }
+                Object::NativeFunction(_) => {
+                    println!("<native function>");
                 }
             }
             next = &node.next
