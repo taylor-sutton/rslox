@@ -110,10 +110,23 @@ impl Debug for NativeFunction {
 }
 
 #[derive(Debug)]
+pub struct Closure {
+    pub function: HeapRef,
+}
+
+impl Display for Closure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.function
+            .map_as_function(|func| Display::fmt(func, f))
+            .unwrap()
+    }
+}
+#[derive(Debug)]
 pub enum Object {
     InternedString(InternedString),
     Function(Function),
     NativeFunction(NativeFunction),
+    Closure(Closure),
 }
 
 impl Display for Object {
@@ -122,6 +135,7 @@ impl Display for Object {
             Object::InternedString(i) => Display::fmt(&i, f),
             Object::Function(i) => Display::fmt(&i, f),
             Object::NativeFunction(_) => write!(f, "<native function>"),
+            Object::Closure(c) => Display::fmt(&c, f),
         }
     }
 }
@@ -213,6 +227,20 @@ impl Heap {
         }
     }
 
+    pub fn new_closure(&mut self, function_ref: HeapRef) -> HeapRef {
+        let o = Rc::new(RefCell::new(Object::Closure(Closure {
+            function: function_ref,
+        })));
+        let obj = HeapNode {
+            object: o.clone(),
+            next: self.head.take(),
+        };
+        self.head = Some(Box::new(obj));
+        HeapRef {
+            value: std::rc::Rc::downgrade(&o),
+        }
+    }
+
     // Print out all the objects on the heap in linked list order for debugging.
     #[allow(dead_code)]
     fn dump(&self) {
@@ -227,6 +255,9 @@ impl Heap {
                 }
                 Object::NativeFunction(_) => {
                     println!("<native function>");
+                }
+                Object::Closure(c) => {
+                    println!("{}", c);
                 }
             }
             next = &node.next
