@@ -20,7 +20,7 @@ macro_rules! binary_arithmetic {
 pub const JUMP_SENTINEL: u16 = 0;
 
 /// A single instruction, in a parsed/type-safe format.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Instruction {
     /// Pop and print the top value
     #[allow(dead_code)]
@@ -78,7 +78,14 @@ pub enum Instruction {
     Call(u8),
     /// Create a Closure object on top of the stack
     /// u8 argument is a constant index, referring to a HeapRef of a Function.
-    Closure(u8),
+    // in the book, this instruction is dynamically sized:
+    // when the VM encounters it, it's supposed to look at the closure on top of the stack
+    // and use that (the number of upvalues) to determine the size of the instruction
+    // It will be simpler for us to do something else (...what? hard to preserve Copy for Instruction)
+    Closure(u8, Vec<(bool, u8)>),
+    // like get/set local but using upvalues instead
+    SetUpvalue(u8),
+    GetUpvalue(u8),
 }
 
 impl Display for Instruction {
@@ -109,7 +116,15 @@ impl Display for Instruction {
             Instruction::Jump(u) => write!(f, "OP_JUMP {:4}", u),
             Instruction::Loop(u) => write!(f, "OP_LOOP {:4}", u),
             Instruction::Call(u) => write!(f, "OP_CALL {:4}", u),
-            Instruction::Closure(u) => write!(f, "OP_CLOSURE {:4}", u),
+            Instruction::Closure(u, upvalues) => {
+                write!(f, "OP_CLOSURE {:4} | ", u)?;
+                for (local, idx) in upvalues {
+                    write!(f, " {}{}", if *local { "l" } else { "u" }, idx)?;
+                }
+                Ok(())
+            }
+            Instruction::SetUpvalue(u) => write!(f, "OP_SET_UPVALUE {:4}", u),
+            Instruction::GetUpvalue(u) => write!(f, "OP_GET_UPVALUE {:4}", u),
         }
     }
 }
@@ -425,7 +440,7 @@ impl<'data> Vm<'data> {
 
             let instr = frame
                 .closure
-                .map_as_closure_function(|f| f.chunk.code[frame.ip])
+                .map_as_closure_function(|f| f.chunk.code[frame.ip].clone())
                 .unwrap();
 
             #[cfg(feature = "trace")]
@@ -474,7 +489,7 @@ impl<'data> Vm<'data> {
                     return Ok(());
                 }
                 self.stack
-                    .resize_with(old_frame.frame_start_stack_index, || todo!());
+                    .resize_with(old_frame.frame_start_stack_index, || unreachable!());
                 self.stack_push(val)?;
                 Ok(())
             }
@@ -646,7 +661,7 @@ impl<'data> Vm<'data> {
                     Ok(())
                 }
             }
-            Instruction::Closure(u) => {
+            Instruction::Closure(u, upvalues) => {
                 let function_ref = get_constant(*u)
                     .as_heap_ref()
                     .ok_or_else(|| {
@@ -656,6 +671,8 @@ impl<'data> Vm<'data> {
                 let closure = self.heap.new_closure(function_ref);
                 self.stack_push(Value::Object(closure))
             }
+            Instruction::SetUpvalue(i) => todo!("SetUpvalue {}", i),
+            Instruction::GetUpvalue(i) => todo!("GetUpvalue {}", i),
         }
     }
 

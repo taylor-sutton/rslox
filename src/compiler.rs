@@ -52,11 +52,23 @@ impl<'token> Local<'token> {
 }
 
 #[derive(Debug)]
+// An Upvalue is a compile-time construct, similar to Local, that tracks
+// what values a closure refers to in the parent scope.
+// if is_local is true, the upvalue refers to the local at this index in parent scope
+// if false, then refers to upvalue at given index.
+struct Upvalue {
+    index: u8,
+    is_local: bool,
+}
+
+#[derive(Debug)]
 struct FunctionCompiler<'tokens> {
     // Book uses a fixed-sized array as a variable-sized array by tracking the number of elements in use
     // Managing the lifetimes of possibly-not-initialized locals in an array is more trouble then it's worth
     // So let's just use a Vec, and add bounds-checking when adding a local to keep the len within MAX_LOCALS
     locals: Vec<Local<'tokens>>,
+    // same same
+    upvalues: Vec<Upvalue>,
     current_depth: usize,
     chunk: Chunk,
     arity: usize,
@@ -66,6 +78,7 @@ impl<'token> Default for FunctionCompiler<'token> {
     fn default() -> Self {
         let mut ret = Self {
             locals: Vec::with_capacity(Self::MAX_LOCALS),
+            upvalues: Vec::with_capacity(Self::MAX_LOCALS),
             current_depth: 0,
             chunk: Chunk::default(),
             arity: 0,
@@ -183,6 +196,23 @@ impl<'tokens> FunctionCompiler<'tokens> {
                 idx.try_into()
                     .expect("converting usize index of locals vec into u8"),
             ),
+        }
+    }
+
+    fn add_upvalue(&mut self, index: u8, is_local: bool) -> usize {
+        // if upvalue already exists, reuse it
+        // otherwise, add it
+        match self
+            .upvalues
+            .iter()
+            .enumerate()
+            .find(|(_, upvalue)| upvalue.is_local == is_local && upvalue.index == index)
+        {
+            None => {
+                self.upvalues.push(Upvalue { index, is_local });
+                self.upvalues.len() - 1
+            }
+            Some((i, _)) => i,
         }
     }
 }
@@ -641,6 +671,10 @@ where
                 let tok = self.current_token.raw.to_owned();
                 // NOTE for future self: In the book's solution, this would call variable() which would call namedVariable()
                 let (get_instr, set_instr) = match self.current_function().get_local_by_name(&tok) {
+                    GetLocalResult::Uninitialized => {
+                        self.error("Can't read local variable in its own initializer.");
+                        return;
+                    }
                     GetLocalResult::FoundLocal(local_idx) => {
                         self.advance(); // advance over local name, discarding it
                         (
@@ -648,14 +682,19 @@ where
                             Instruction::SetLocal(local_idx),
                         )
                     }
-                    GetLocalResult::NoSuchLocal => {
-                        let idx = self.identifier_constant_at_point();
-                        (Instruction::GetGlobal(idx), Instruction::SetGlobal(idx))
-                    }
-                    GetLocalResult::Uninitialized => {
-                        self.error("Can't read local variable in its own initializer.");
-                        return;
-                    }
+                    GetLocalResult::NoSuchLocal => match self.resolve_upvalue(&tok) {
+                        Some(upvalue_idx) => {
+                            self.advance(); // advance over local name, discarding it
+                            (
+                                Instruction::GetUpvalue(upvalue_idx),
+                                Instruction::SetUpvalue(upvalue_idx),
+                            )
+                        }
+                        None => {
+                            let idx = self.identifier_constant_at_point();
+                            (Instruction::GetGlobal(idx), Instruction::SetGlobal(idx))
+                        }
+                    },
                 };
                 match (allow_assignment, self.match_token(TokenType::Equal)) {
                     (true, true) => {
@@ -836,6 +875,11 @@ where
 
         let compiler = self.functions.pop().unwrap();
 
+        let upvalue_vec = compiler
+            .upvalues
+            .iter()
+            .map(|upvalue| (upvalue.is_local, upvalue.index))
+            .collect();
         let f = compiler.end(Some(fn_name));
 
         let heap_object = self.heap.new_function(f);
@@ -847,7 +891,7 @@ where
 
         let line = self.current_token.line;
         self.current_function()
-            .write_instruction(Instruction::Closure(constant_idx), line);
+            .write_instruction(Instruction::Closure(constant_idx, upvalue_vec), line);
     }
 
     fn arg_list(&mut self) -> u8 {
@@ -863,6 +907,40 @@ where
         }
         self.consume(TokenType::RightParen, "Expect ')' after arguments.");
         arg_count
+    }
+
+    // Assuming that name is not a local in the current function,
+    // walk the stack of function compilers, looking for it.
+    // If it does not appear, it's a global, return None.
+    // If it does appear, then add it as an upvalue in all compilers
+    // starting one deeper than where it is a local, all the way to current,
+    // and return the upvalue index
+    fn resolve_upvalue(&mut self, name: &str) -> Option<u8> {
+        let (index_where_local, mut prev_idx) = self
+            .functions
+            .iter()
+            .enumerate()
+            .rev()
+            .skip(1)
+            .map(|(idx, function)| -> Option<(usize, u8)> {
+                match function.get_local_by_name(name) {
+                    GetLocalResult::Uninitialized => {
+                        panic!("found unitialized local {} during upvalue resolution", name)
+                    }
+                    GetLocalResult::NoSuchLocal => None,
+                    GetLocalResult::FoundLocal(u) => Some((idx, u)),
+                }
+            })
+            .find(|u| u.is_some())? // if we don't find it as any local, return the None
+            .unwrap(); // because the value satisfies is_some, we can unwrap it
+        for function_idx in (index_where_local + 1)..self.functions.len() {
+            let is_local = function_idx == index_where_local + 1;
+            prev_idx = self.functions[function_idx]
+                .add_upvalue(prev_idx, is_local)
+                .try_into()
+                .expect("prev idx to be u8-sized")
+        }
+        Some(prev_idx)
     }
 }
 

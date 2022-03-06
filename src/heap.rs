@@ -336,14 +336,8 @@ impl HeapRef {
     where
         F: FnOnce(&Function) -> Ret,
     {
-        Some(f(self
-            .as_obj()
-            .borrow()
-            .as_closure()?
-            .function
-            .as_obj()
-            .borrow()
-            .as_function()?))
+        self.map_as_closure(|c| (c.function.map_as_function(f)))
+            .flatten()
     }
 }
 
