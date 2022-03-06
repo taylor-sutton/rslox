@@ -289,6 +289,13 @@ impl Object {
             _ => None,
         }
     }
+
+    pub fn as_closure(&self) -> Option<&Closure> {
+        match self {
+            Object::Closure(c) => Some(c),
+            _ => None,
+        }
+    }
 }
 
 impl HeapRef {
@@ -306,13 +313,37 @@ impl HeapRef {
         Some(f(self.as_obj().borrow().as_string()?))
     }
 
-    // Apply a function to the inner object if it's a string, returning the result if it's a string
-    // And none if it isn't a string
+    // Apply a function to the inner object if it's a Function, returning the result if it is
+    // And none if it isn't
     pub fn map_as_function<F, Ret>(&self, f: F) -> Option<Ret>
     where
         F: FnOnce(&Function) -> Ret,
     {
         Some(f(self.as_obj().borrow().as_function()?))
+    }
+
+    // Apply a function to the inner object if it's a Closure, returning the result if it is
+    // And none if it isn't
+    pub fn map_as_closure<F, Ret>(&self, f: F) -> Option<Ret>
+    where
+        F: FnOnce(&Closure) -> Ret,
+    {
+        Some(f(self.as_obj().borrow().as_closure()?))
+    }
+
+    // Apply a function to the inner Function of a closure
+    pub fn map_as_closure_function<F, Ret>(&self, f: F) -> Option<Ret>
+    where
+        F: FnOnce(&Function) -> Ret,
+    {
+        Some(f(self
+            .as_obj()
+            .borrow()
+            .as_closure()?
+            .function
+            .as_obj()
+            .borrow()
+            .as_function()?))
     }
 }
 

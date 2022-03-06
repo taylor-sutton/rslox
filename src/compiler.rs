@@ -847,7 +847,7 @@ where
 
         let line = self.current_token.line;
         self.current_function()
-            .write_instruction(Instruction::Constant(constant_idx), line);
+            .write_instruction(Instruction::Closure(constant_idx), line);
     }
 
     fn arg_list(&mut self) -> u8 {

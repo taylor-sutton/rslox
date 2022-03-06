@@ -76,6 +76,9 @@ pub enum Instruction {
     Loop(u16),
     /// Call the function on top of the stack, with u8 as number of args
     Call(u8),
+    /// Create a Closure object on top of the stack
+    /// u8 argument is a constant index, referring to a HeapRef of a Function.
+    Closure(u8),
 }
 
 impl Display for Instruction {
@@ -106,6 +109,7 @@ impl Display for Instruction {
             Instruction::Jump(u) => write!(f, "OP_JUMP {:4}", u),
             Instruction::Loop(u) => write!(f, "OP_LOOP {:4}", u),
             Instruction::Call(u) => write!(f, "OP_CALL {:4}", u),
+            Instruction::Closure(u) => write!(f, "OP_CLOSURE {:4}", u),
         }
     }
 }
@@ -318,7 +322,7 @@ use crate::heap::*;
 
 #[derive(Debug)]
 struct CallFrame {
-    function: HeapRef,
+    closure: HeapRef,
     ip: usize,
     frame_start_stack_index: usize,
 }
@@ -380,9 +384,10 @@ impl<'data> Vm<'data> {
         heap: &'data mut Heap,
         globals: &'data mut HashMap<String, Value>,
     ) -> Self {
+        let closure = heap.new_closure(script_ref);
         let mut v = Vm {
             frames: vec![CallFrame {
-                function: script_ref.clone(),
+                closure: closure.clone(),
                 ip: 0,
                 frame_start_stack_index: 0,
             }],
@@ -390,7 +395,7 @@ impl<'data> Vm<'data> {
             heap,
             globals,
         };
-        v.stack_push(Value::Object(script_ref)).unwrap();
+        v.stack_push(Value::Object(closure)).unwrap();
         v.define_native(
             "clock".to_string(),
             Box::new(|_| {
@@ -411,16 +416,16 @@ impl<'data> Vm<'data> {
             let frames_len = self.frames.len();
             let frame = self.frames.last_mut().unwrap();
             let chunk_len = frame
-                .function
-                .map_as_function(|f| f.chunk.code_len())
-                .unwrap();
+                .closure
+                .map_as_closure_function(|f| f.chunk.code_len())
+                .expect("frame's closure field is a closure");
             if frame.ip >= chunk_len {
                 break;
             }
 
             let instr = frame
-                .function
-                .map_as_function(|f| f.chunk.code[frame.ip])
+                .closure
+                .map_as_closure_function(|f| f.chunk.code[frame.ip])
                 .unwrap();
 
             #[cfg(feature = "trace")]
@@ -431,8 +436,8 @@ impl<'data> Vm<'data> {
                 }
                 println!("]");
                 frame
-                    .function
-                    .map_as_function(|f| {
+                    .closure
+                    .map_as_closure_function(|f| {
                         println!("{}", f.chunk.disassemble_instruction(&instr, frame.ip))
                     })
                     .unwrap();
@@ -455,11 +460,10 @@ impl<'data> Vm<'data> {
         let stack_base = frame.frame_start_stack_index;
         // let chunk = script.chunk;
         let get_constant = |idx: u8| -> Value {
-            if let Object::Function(script) = &*frame.function.as_obj().borrow() {
-                script.chunk.get_constant(idx).clone()
-            } else {
-                unreachable!()
-            }
+            frame
+                .closure
+                .map_as_closure_function(|f| f.chunk.get_constant(idx).clone())
+                .unwrap()
         };
 
         match instruction {
@@ -642,6 +646,16 @@ impl<'data> Vm<'data> {
                     Ok(())
                 }
             }
+            Instruction::Closure(u) => {
+                let function_ref = get_constant(*u)
+                    .as_heap_ref()
+                    .ok_or_else(|| {
+                        LoxError::RuntimeError("OP_CLOSURE got non-object on stack".to_string())
+                    })
+                    .map(|x| x.clone())?;
+                let closure = self.heap.new_closure(function_ref);
+                self.stack_push(Value::Object(closure))
+            }
         }
     }
 
@@ -654,9 +668,9 @@ impl<'data> Vm<'data> {
     fn call_value(&mut self, value: Value, arg_count: u8) -> bool {
         if let Value::Object(o) = value {
             match &*o.as_obj().borrow() {
-                Object::Function(_) => {
+                Object::Closure(_) => {
                     self.frames.push(CallFrame {
-                        function: o,
+                        closure: o,
                         ip: 0,
                         frame_start_stack_index: self.stack.len() - usize::from(arg_count) - 1,
                     });
