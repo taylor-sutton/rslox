@@ -112,6 +112,7 @@ impl Debug for NativeFunction {
 #[derive(Debug)]
 pub struct Closure {
     pub function: HeapRef,
+    pub upvalues: Vec<HeapRef>, // or Upvalue?
 }
 
 impl Display for Closure {
@@ -122,11 +123,25 @@ impl Display for Closure {
     }
 }
 #[derive(Debug)]
+pub enum Upvalue {
+    // index into stack (from top, not from frame-top)
+    Stack(usize),
+    Heap(HeapRef),
+}
+
+impl Display for Upvalue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "upvalue")
+    }
+}
+
+#[derive(Debug)]
 pub enum Object {
     InternedString(InternedString),
     Function(Function),
     NativeFunction(NativeFunction),
     Closure(Closure),
+    Upvalue(Upvalue),
 }
 
 impl Display for Object {
@@ -136,6 +151,7 @@ impl Display for Object {
             Object::Function(i) => Display::fmt(&i, f),
             Object::NativeFunction(_) => write!(f, "<native function>"),
             Object::Closure(c) => Display::fmt(&c, f),
+            Object::Upvalue(u) => Display::fmt(&u, f),
         }
     }
 }
@@ -258,6 +274,9 @@ impl Heap {
                 }
                 Object::Closure(c) => {
                     println!("{}", c);
+                }
+                Object::Upvalue(u) => {
+                    println!("{}", u);
                 }
             }
             next = &node.next
